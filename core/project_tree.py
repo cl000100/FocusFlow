@@ -339,6 +339,28 @@ def get_projects_by_depth() -> List[Dict[str, Any]]:
     return projects
 
 
+def get_project_files(project_id: int) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT file_path, assigned_at
+        FROM file_assignment
+        WHERE project_id = ?
+        ORDER BY assigned_at DESC
+    """, (project_id,))
+    
+    files = []
+    for row in cursor.fetchall():
+        files.append({
+            'file_path': row[0],
+            'assigned_at': row[1]
+        })
+    
+    conn.close()
+    return files
+
+
 def get_all_projects_flat() -> List[Dict[str, Any]]:
     conn = get_connection()
     cursor = conn.cursor()
@@ -363,3 +385,11 @@ def get_all_projects_flat() -> List[Dict[str, Any]]:
     
     conn.close()
     return projects
+
+
+def remove_file_assignment(file_path: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM file_assignment WHERE file_path = ?", (file_path,))
+    conn.commit()
+    conn.close()
