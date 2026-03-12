@@ -158,15 +158,15 @@ def init_project_tree():
     conn.commit()
     conn.close()
 
-
 def load_project_tree() -> ProjectTree:
     tree = ProjectTree()
     conn = get_connection()
     cursor = conn.cursor()
     
+    # 修复：将 pa.project_name 改为 pa.project_id
     cursor.execute("""
         SELECT p.id, p.project_name, p.parent_id, p.created_at,
-               CASE WHEN pa.project_name IS NOT NULL THEN 1 ELSE 0 END as is_archived
+               CASE WHEN pa.project_id IS NOT NULL THEN 1 ELSE 0 END as is_archived
         FROM projects p
         LEFT JOIN project_archive pa ON p.id = pa.project_id
     """)
@@ -184,7 +184,6 @@ def load_project_tree() -> ProjectTree:
     conn.close()
     tree.build_tree()
     return tree
-
 
 def create_project(name: str, parent_id: Optional[int] = None) -> Optional[int]:
     conn = get_connection()
@@ -269,7 +268,6 @@ def restore_project(project_id: int) -> bool:
     conn.close()
     return True
 
-
 def get_project_stats(project_id: int, include_children: bool = False) -> Dict[str, float]:
     conn = get_connection()
     cursor = conn.cursor()
@@ -288,26 +286,28 @@ def get_project_stats(project_id: int, include_children: bool = False) -> Dict[s
         placeholders = ','.join('?' * len(all_ids))
         cursor.execute(f"""
             SELECT 
-                COALESCE(SUM(duration), 0) as total,
-                COALESCE(SUM(CASE WHEN DATE(timestamp) = DATE('now') THEN duration ELSE 0 END), 0) as today
-            FROM activity_log
-            WHERE project_id IN ({placeholders})
+                COALESCE(SUM(al.duration), 0) as total,
+                COALESCE(SUM(CASE WHEN DATE(al.timestamp) = DATE('now') THEN al.duration ELSE 0 END), 0) as today
+            FROM activity_log al
+            JOIN file_assignment fa ON al.file_path = fa.file_path
+            WHERE fa.project_id IN ({placeholders})
         """, all_ids)
     else:
         cursor.execute("""
             SELECT 
-                COALESCE(SUM(duration), 0) as total,
-                COALESCE(SUM(CASE WHEN DATE(timestamp) = DATE('now') THEN duration ELSE 0 END), 0) as today
-            FROM activity_log
-            WHERE project_id = ?
+                COALESCE(SUM(al.duration), 0) as total,
+                COALESCE(SUM(CASE WHEN DATE(al.timestamp) = DATE('now') THEN al.duration ELSE 0 END), 0) as today
+            FROM activity_log al
+            JOIN file_assignment fa ON al.file_path = fa.file_path
+            WHERE fa.project_id = ?
         """, (project_id,))
     
     row = cursor.fetchone()
     conn.close()
     
     return {
-        'total': float(row[0]),
-        'today': float(row[1])
+        'total': float(row[0]) if row else 0.0,
+        'today': float(row[1]) if row else 0.0
     }
 
 

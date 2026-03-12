@@ -189,7 +189,7 @@ class Dashboard(ctk.CTk):
         self.project_menu.add_command(label="删除项目", command=self._menu_delete)
 
     def _schedule_refresh(self):
-        self.after(1000, self._auto_refresh)
+        self.after(8000, self._auto_refresh)
 
     def _auto_refresh(self):
         self.refresh_all()
@@ -219,8 +219,7 @@ class Dashboard(ctk.CTk):
         updated_at, is_idle, _, app_name, file_path = self.last_status
         if is_idle:
             return False
-        if not (("After Effects" in app_name) or ("Premiere" in app_name)):
-            return False
+        # 移除了仅仅验证 AE 和 PR 的限制，让所有程序都能触发时长跳动
         
         selected = self.project_select_var.get()
         if selected == "自动(最近)":
@@ -548,7 +547,8 @@ class Dashboard(ctk.CTk):
         item_text = self.tree.item(item, "text")
         projects = get_all_projects_flat()
         for p in projects:
-            if p['name'] == item_text and not p['is_archived']:
+            # 修复：移除了 and not p['is_archived']，让程序能正确找到已归档的项目ID
+            if p['name'] == item_text:
                 return p['id']
         return None
 
