@@ -85,6 +85,16 @@ def init_db():
         (id INTEGER PRIMARY KEY AUTOINCREMENT, 
          keyword TEXT UNIQUE,
          created_at DATETIME)''')
+    
+    # 9. 碎片记录归档表（存储被过滤的碎片记录）
+    cursor.execute('''CREATE TABLE IF NOT EXISTS fragment_archive
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+         file_path TEXT,
+         app_name TEXT,
+         duration REAL,
+         timestamp DATETIME,
+         archived_at DATETIME,
+         action TEXT)''')  # action: 'deleted' 或 'merged'
 
     # 初始化默认配置 (如果不存在的话)
     cursor.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('idle_threshold', '30')")
