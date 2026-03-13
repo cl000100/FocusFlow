@@ -103,6 +103,26 @@ def init_db():
     conn.close()
 
 
+def get_config(key, default=None):
+    """读取配置项"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM system_config WHERE key = ?", (key,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else default
+
+
+def set_config(key, value):
+    """写入配置项"""
+    conn = get_connection()
+    conn.execute("""
+        INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)
+    """, (key, value))
+    conn.commit()
+    conn.close()
+
+
 def init_project_tree():
     conn = get_connection()
     cursor = conn.cursor()

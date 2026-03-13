@@ -24,15 +24,20 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox, 
     QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog, QFrame
 )
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont, QPainter, QColor, QPen, QBrush
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont, QPainter, QColor, QPen, QBrush, QIcon, QAction, QPixmap
 from PySide6.QtCore import Qt, QModelIndex, QTimer, QItemSelectionModel
+from PySide6.QtWidgets import QSystemTrayIcon
 
-from core.database import get_connection, init_db, get_db_path, set_db_path
+from core.database import get_connection, init_db, get_db_path, set_db_path, get_config, set_config
 from core.project_tree import (
     load_project_tree, get_project_stats, get_all_projects_flat, 
     get_project_files, create_project, delete_project, 
     archive_project, restore_project, remove_file_assignment
 )
+
+import sys
+import os
+import subprocess
 
 def format_duration(seconds: float) -> str:
     seconds = int(round(seconds or 0))
@@ -44,6 +49,149 @@ def format_duration(seconds: float) -> str:
     return f"{hours}时{minutes}分"
 
 # ================= 弹窗组件 (保持不变) =================
+
+# ================= 系统托盘管理器 =================
+class SystemTrayManager:
+    def __init__(self, dashboard):
+        self.dashboard = dashboard
+        self.tray_icon = None
+        self.tray_menu = None
+        self.click_timer = None
+        
+    def setup(self):
+        """初始化系统托盘"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            print("⚠️ 系统托盘不可用")
+            return
+        
+        # 创建托盘图标（字母 F）
+        self.tray_icon = QSystemTrayIcon(self.dashboard)
+        self.tray_icon.setIcon(self._create_f_icon())
+        self.tray_icon.setToolTip("FocusFlow - 自动时间追踪")
+        
+        # 创建菜单
+        self.tray_menu = QMenu()
+        
+        # 菜单项 1：显示/隐藏主界面
+        self.action_dashboard = QAction("显示主界面", self.dashboard)
+        self.action_dashboard.triggered.connect(self.toggle_dashboard)
+        self.tray_menu.addAction(self.action_dashboard)
+        
+        # 菜单项 2：显示/隐藏悬浮窗
+        self.action_floating = QAction("显示悬浮窗", self.dashboard)
+        self.action_floating.triggered.connect(self.toggle_floating)
+        self.tray_menu.addAction(self.action_floating)
+        
+        self.tray_menu.addSeparator()
+        
+        # 菜单项 3：重启程序
+        self.action_restart = QAction("重启程序", self.dashboard)
+        self.action_restart.triggered.connect(self.restart_app)
+        self.tray_menu.addAction(self.action_restart)
+        
+        self.tray_icon.setContextMenu(self.tray_menu)
+        
+        # 显示托盘图标
+        self.tray_icon.show()
+        
+        # 更新菜单文本
+        self.update_menu_texts()
+        
+        print("✅ 系统托盘已初始化")
+    
+    def _create_f_icon(self):
+        """创建字母 F 图标"""
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 画蓝色圆形背景
+        painter.setBrush(QColor("#4A90D9"))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(2, 2, 28, 28)
+        
+        # 画白色字母 F
+        painter.setPen(QColor("#FFFFFF"))
+        font = painter.font()
+        font.setBold(True)
+        font.setPointSize(18)
+        painter.setFont(font)
+        painter.drawText(8, 22, "F")
+        
+        painter.end()
+        return QIcon(pixmap)
+    
+    def toggle_dashboard(self):
+        """切换主界面显示/隐藏"""
+        if self.dashboard.isVisible():
+            self.dashboard.hide()
+        else:
+            self.dashboard.show()
+            self.dashboard.activateWindow()
+            self.dashboard.raise_()
+        self.update_menu_texts()
+    
+    def toggle_floating(self):
+        """切换悬浮窗显示/隐藏"""
+        floating = self.dashboard.floating_widget
+        if floating.isVisible():
+            floating.hide()
+            set_config("floating_visible", "false")
+        else:
+            # 恢复位置
+            x = get_config("floating_position_x", "100")
+            y = get_config("floating_position_y", "200")
+            floating.move(int(x), int(y))
+            floating.show()
+            set_config("floating_visible", "true")
+        self.update_menu_texts()
+    
+    def restart_app(self):
+        """重启程序"""
+        # 保存当前状态
+        floating_visible = "true" if self.dashboard.floating_widget.isVisible() else "false"
+        set_config("floating_visible", floating_visible)
+        
+        # 保存悬浮窗位置
+        floating = self.dashboard.floating_widget
+        set_config("floating_position_x", str(floating.x()))
+        set_config("floating_position_y", str(floating.y()))
+        
+        # 关闭所有窗口
+        self.dashboard.close()
+        
+        # 重启进程
+        python = sys.executable
+        script = os.path.abspath(__file__)
+        
+        # 启动新进程
+        subprocess.Popen([python, script])
+        
+        # 退出当前进程
+        sys.exit(0)
+    
+    def update_menu_texts(self):
+        """更新菜单文本"""
+        # 主界面
+        if self.dashboard.isVisible():
+            self.action_dashboard.setText("隐藏主界面")
+        else:
+            self.action_dashboard.setText("显示主界面")
+        
+        # 悬浮窗
+        if self.dashboard.floating_widget.isVisible():
+            self.action_floating.setText("隐藏悬浮窗")
+        else:
+            self.action_floating.setText("显示悬浮窗")
+    
+    def cleanup(self):
+        """清理托盘"""
+        if self.tray_icon:
+            self.tray_icon.hide()
+            self.tray_icon = None
+
 class BlacklistDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -264,6 +412,20 @@ class FloatingWidget(QWidget):
         # 注入 Mac 灵魂
         apply_macos_window_behavior(self.winId())
         self._is_dragging = False
+        
+        # 恢复上次的位置和显示状态
+        self.restore_state()
+    
+    def restore_state(self):
+        """恢复上次的位置和显示状态"""
+        x = get_config("floating_position_x", "100")
+        y = get_config("floating_position_y", "200")
+        visible = get_config("floating_visible", "false")
+        
+        self.move(int(x), int(y))
+        
+        if visible == "true":
+            self.show()
 
     def setup_ui(self):
         self.container = QFrame(self)
@@ -349,12 +511,28 @@ class FloatingWidget(QWidget):
             self._is_dragging = True
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
+    
     def mouseMoveEvent(self, event):
         if self._is_dragging and self._drag_pos is not None:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
+            # 保存新位置
+            set_config("floating_position_x", str(self.x()))
+            set_config("floating_position_y", str(self.y()))
             event.accept()
+    
     def mouseReleaseEvent(self, event):
         self._is_dragging = False
+        self._drag_pos = None
+    
+    def hideEvent(self, event):
+        """隐藏时保存状态"""
+        set_config("floating_visible", "false")
+        super().hideEvent(event)
+    
+    def showEvent(self, event):
+        """显示时保存状态"""
+        set_config("floating_visible", "true")
+        super().showEvent(event)
 # ================= 数据可视化大屏 =================
 
 class DataDashboardWindow(QDialog):
@@ -712,10 +890,16 @@ class DashboardV2(QMainWindow):
 
         self._current_track_path = None
         self._session_seconds = 0
-
+        
+        # 提前实例化悬浮窗（在 setup_ui 之前）
+        self.floating_widget = FloatingWidget(self)
 
         self.setup_ui()
         self.apply_modern_theme()
+        
+        # 初始化系统托盘
+        self.system_tray = SystemTrayManager(self)
+        self.system_tray.setup()
         
         self.refresh_data()
         
@@ -743,8 +927,7 @@ class DashboardV2(QMainWindow):
         self.btn_dashboard.setStyleSheet("background-color: #31A8FF; color: white; font-weight: bold; padding: 4px 12px; border-radius: 4px; margin-left: 15px;")
         self.btn_dashboard.clicked.connect(lambda: DataDashboardWindow(self).exec())
         header_layout.addWidget(self.btn_dashboard)
-        # 【新增】：呼出悬浮秒表
-        self.floating_widget = FloatingWidget(self) # 实例化悬浮窗，藏在后台
+        # 【新增】：呼出悬浮秒表（确保 floating_widget 已初始化）
         self.btn_float = QPushButton("📌 悬浮秒表")
         self.btn_float.setStyleSheet("background-color: #4A4A4A; color: white; font-weight: bold; padding: 4px 12px; border-radius: 4px; margin-left: 10px;")
         self.btn_float.clicked.connect(self.floating_widget.show)
@@ -1327,7 +1510,11 @@ class DashboardV2(QMainWindow):
 
     def _load_inbox_data(self):
         # 【新增】：同步分组视图模式状态
-        self.inbox_group_mode = self.btn_inbox_group.isChecked()
+        new_group_mode = self.btn_inbox_group.isChecked()
+        
+        # 检测视图模式是否切换
+        mode_changed = getattr(self, 'inbox_group_mode', None) != new_group_mode
+        self.inbox_group_mode = new_group_mode
         
         conn = get_connection()
         cursor = conn.cursor()
@@ -1367,14 +1554,13 @@ class DashboardV2(QMainWindow):
         
         # 【分组视图模式】
         if self.inbox_group_mode:
-            # 检查结构是否变化
-            if getattr(self, 'last_inbox_hash', None) == current_inbox_hash:
-                # 结构没变，只更新时间数字（不破坏展开状态）
-                self._update_inbox_durations_in_group_mode(new_data, format_display_name)
-            else:
-                # 结构变化，重新绘制
-                self._render_inbox_group_mode(new_data, format_display_name)
+            # 视图模式切换或结构变化时，重新绘制
+            if mode_changed or getattr(self, 'last_inbox_hash', None) != current_inbox_hash:
+                self._render_inbox_group_mode(new_data, parse_file_info)
                 self.last_inbox_hash = current_inbox_hash
+            else:
+                # 结构没变，只更新时间数字（不破坏展开状态）
+                self._update_inbox_durations_in_group_mode(new_data, parse_file_info)
         
         # 【普通列表视图模式】
         else:
@@ -2210,24 +2396,39 @@ class DashboardV2(QMainWindow):
 
     def apply_modern_theme(self):
         self.setStyleSheet("""
-        QMainWindow { background-color: #1E1E1E; }
-        QWidget#header { background-color: #252526; }
-        QLabel#statsBar { background-color: #2D2D30; color: #D4D4D4; padding: 0px 20px; font-size: 13px; font-weight: bold; border-bottom: 1px solid #333333; }
-        QLabel#titleLabel { color: #CCCCCC; font-size: 15px; font-weight: bold; }
-        QLabel#panelTitle { color: #9CDCFE; font-size: 13px; font-weight: bold; padding: 5px; }
-        QPushButton { background-color: #0E639C; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold; }
-        QPushButton:hover { background-color: #1177BB; }
-        QTreeView { background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #333333; border-radius: 4px; padding: 4px; font-size: 13px; outline: 0;}
-        QTreeView::item { padding: 4px; border-radius: 4px; }
-        QTreeView::item:hover { background-color: #2A2D2E; }
-        QTreeView::item:selected { background-color: #37373D; color: #FFFFFF; }
-        QHeaderView::section { background-color: #252526; color: #999999; padding: 4px; border: none; border-right: 1px solid #333333; border-bottom: 1px solid #333333; font-weight: bold; font-size: 12px;}
-        QMenu { background-color: #252526; color: #CCCCCC; border: 1px solid #333333; }
-        QMenu::item:selected { background-color: #0E639C; color: white; }
-        QListWidget { background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #333333; }
-        QListWidget::item:selected { background-color: #37373D; }
-        QCheckBox { color: #D4D4D4; }
+            QMainWindow { background-color: #1E1E1E; }
+            QWidget#header { background-color: #252526; }
+            QLabel#titleLabel { font-size: 20px; font-weight: bold; color: #FFFFFF; }
+            QLabel#statusLabel { color: #CCCCCC; }
+            QLabel#statsBar { background-color: #2D2D30; color: #D4D4D4; padding: 0px 20px; font-size: 13px; font-weight: bold; border-bottom: 1px solid #333333; }
+            QLabel#panelTitle { color: #9CDCFE; font-size: 13px; font-weight: bold; padding: 5px; }
+            QPushButton { background-color: #0E639C; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold; }
+            QPushButton:hover { background-color: #1177BB; }
+            QTreeView { background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #333333; border-radius: 4px; padding: 4px; font-size: 13px; outline: 0;}
+            QTreeView::item { padding: 4px; border-radius: 4px; }
+            QTreeView::item:hover { background-color: #2A2D2E; }
+            QTreeView::item:selected { background-color: #37373D; color: #FFFFFF; }
+            QHeaderView::section { background-color: #252526; color: #999999; padding: 4px; border: none; border-right: 1px solid #333333; border-bottom: 1px solid #333333; font-weight: bold; font-size: 12px;}
+            QMenu { background-color: #252526; color: #CCCCCC; border: 1px solid #333333; }
+            QMenu::item:selected { background-color: #0E639C; color: white; }
+            QListWidget { background-color: #1E1E1E; color: #D4D4D4; border: 1px solid #333333; }
+            QListWidget::item:selected { background-color: #37373D; }
+            QCheckBox { color: #D4D4D4; }
         """)
+    
+    def closeEvent(self, event):
+        """关闭窗口时清理资源"""
+        # 保存悬浮窗状态
+        if hasattr(self, 'floating_widget'):
+            set_config("floating_position_x", str(self.floating_widget.x()))
+            set_config("floating_position_y", str(self.floating_widget.y()))
+            set_config("floating_visible", "true" if self.floating_widget.isVisible() else "false")
+        
+        # 清理系统托盘
+        if hasattr(self, 'system_tray'):
+            self.system_tray.cleanup()
+        
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
