@@ -136,8 +136,8 @@ class SubProjectGroupWidget(QWidget):
         self.is_expanded = True
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 5, 0, 5)  # 左边距增加到 30，显示缩进
-        layout.setSpacing(2)
+        layout.setContentsMargins(10, 0, 0, 0)
+        layout.setSpacing(0)
         
         # 子分组头
         self.header_btn = QPushButton()
@@ -150,25 +150,22 @@ class SubProjectGroupWidget(QWidget):
         minutes = (total_duration % 3600) // 60
         duration_str = f"{hours}小时{minutes}分钟" if hours > 0 else f"{minutes}分钟"
         
-        # 添加层级标识符
-        self.header_btn.setText(f"  └─ {subproject_name}  ({duration_str} | {record_count}条)")
+        self.header_btn.setText(f"▼ {subproject_name}  ({duration_str} | {record_count}条)")
         self.header_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3A3A3A;
-                color: #B0B0B0;
-                font-size: 11px;
-                font-weight: normal;
-                padding: 4px 8px;
-                border: 1px dashed #555555;
+                background-color: #333333;
+                color: #CCCCCC;
+                font-size: 12px;
+                padding: 5px 10px;
+                border: 1px solid #3E3E3E;
                 border-radius: 3px;
                 text-align: left;
             }
             QPushButton:hover {
-                background-color: #454545;
-                border: 1px dashed #666666;
+                background-color: #3E3E3E;
             }
             QPushButton:checked {
-                background-color: #3A3A3A;
+                background-color: #333333;
                 border-bottom-left-radius: 0;
                 border-bottom-right-radius: 0;
             }
@@ -213,14 +210,14 @@ class SubProjectGroupWidget(QWidget):
 class TimeSlotWidget(QWidget):
     """时间段组件（可展开详情）"""
     
-    def __init__(self, slot_name, start_time, end_time, total_duration, apps_used, parent=None):
+    def __init__(self, start_time, end_time, total_duration, apps_used, parent=None):
         super().__init__(parent)
         self.is_expanded = False
         self.start_time = start_time
         self.end_time = end_time
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 5, 0, 5)
+        layout.setContentsMargins(10, 0, 0, 0)
         layout.setSpacing(0)
         
         # 时间段头
@@ -234,22 +231,22 @@ class TimeSlotWidget(QWidget):
         minutes = (total_duration % 3600) // 60
         duration_str = f"{hours}小时{minutes}分钟" if hours > 0 else f"{minutes}分钟"
         
-        self.header_btn.setText(f"📌 {slot_name}: {start_time} - {end_time}  ({duration_str})  |  {apps_used}")
+        self.header_btn.setText(f"▶ {start_time} - {end_time}  ({duration_str})  -  {apps_used}")
         self.header_btn.setStyleSheet("""
             QPushButton {
-                background-color: #2A3A3A;
-                color: #80CBC4;
-                font-size: 12px;
-                padding: 6px 10px;
-                border: 1px solid #3E5E5E;
-                border-radius: 4px;
+                background-color: #2A2A2A;
+                color: #808080;
+                font-size: 11px;
+                padding: 4px 8px;
+                border: 1px solid #3E3E3E;
+                border-radius: 3px;
                 text-align: left;
             }
             QPushButton:hover {
-                background-color: #3E5E5E;
+                background-color: #3E3E3E;
             }
             QPushButton:checked {
-                background-color: #2A3A3A;
+                background-color: #2A2A2A;
                 border-bottom-left-radius: 0;
                 border-bottom-right-radius: 0;
             }
@@ -1528,11 +1525,11 @@ class DataDashboardWindow(QDialog):
         if current_block:
             blocks.append(current_block)
         
-        # 查询项目信息（包括 parent_id）
+        # 查询项目信息
         for block in blocks:
             if block['file'] and not block['file'].startswith('['):
                 proj_query = """
-                    SELECT p.project_name, p.parent_id
+                    SELECT p.project_name 
                     FROM file_assignment fa
                     JOIN projects p ON fa.project_id = p.id
                     WHERE fa.file_path = ?
@@ -1540,42 +1537,10 @@ class DataDashboardWindow(QDialog):
                 result = conn.execute(proj_query, (block['file'],)).fetchone()
                 if result:
                     block['project'] = result[0]
-                    block['parent_id'] = result[1]
                 else:
                     block['project'] = '未分配'
-                    block['parent_id'] = None
             else:
                 block['project'] = '未分配'
-                block['parent_id'] = None
-        
-        # 查询所有项目信息，构建父子关系
-        projects_query = "SELECT project_name, id, parent_id FROM projects"
-        all_projects = conn.execute(projects_query).fetchall()
-        
-        # 构建项目字典
-        project_dict = {}  # {project_name: {'id': id, 'parent_id': parent_id, 'children': []}}
-        for proj_name, proj_id, parent_id in all_projects:
-            project_dict[proj_name] = {
-                'id': proj_id,
-                'parent_id': parent_id,
-                'children': []
-            }
-        
-        # 获取父项目名称
-        def get_parent_name(parent_id):
-            if parent_id is None:
-                return None
-            for proj_name, proj_data in project_dict.items():
-                if proj_data['id'] == parent_id:
-                    return proj_name
-            return None
-        
-        # 构建父子关系
-        for proj_name, proj_data in project_dict.items():
-            if proj_data['parent_id'] is not None:
-                parent_name = get_parent_name(proj_data['parent_id'])
-                if parent_name and parent_name in project_dict:
-                    project_dict[parent_name]['children'].append(proj_name)
         
         conn.close()
         
@@ -1592,49 +1557,12 @@ class DataDashboardWindow(QDialog):
                 projects_data[project] = []
             projects_data[project].append(block)
         
-        # 创建分组组件（先创建父项目，再创建子项目）
+        # 创建分组组件
         total_seconds = 0
         total_records = 0
         
-        # 只遍历顶级项目（没有父项目的项目）
-        top_level_projects = [name for name, data in project_dict.items() 
-                             if data['parent_id'] is None and name in projects_data]
-        
-        # 处理未分配项目（没有 parent_id 信息）
-        unassigned_blocks = projects_data.get('未分配', [])
-        if unassigned_blocks:
-            proj_total = sum(b['end_sec'] - b['start_sec'] for b in unassigned_blocks)
-            proj_start = min(b['start_sec'] for b in unassigned_blocks)
-            proj_end = max(b['end_sec'] for b in unassigned_blocks)
-            proj_records = len(unassigned_blocks)
-            
-            total_seconds += proj_total
-            total_records += proj_records
-            
-            start_time_str = f"{int(proj_start//3600):02d}:{int((proj_start%3600)//60):02d}"
-            end_time_str = f"{int(proj_end//3600):02d}:{int((proj_end%3600)//60):02d}"
-            
-            group = ProjectGroupWidget('未分配', proj_total, start_time_str, end_time_str, proj_records)
-            
-            for block in sorted(unassigned_blocks, key=lambda x: x['start_sec']):
-                b_start = f"{int(block['start_sec']//3600):02d}:{int((block['start_sec']%3600)//60):02d}:{int(block['start_sec']%60):02d}"
-                b_end = f"{int(block['end_sec']//3600):02d}:{int((block['end_sec']%3600)//60):02d}:{int(block['end_sec']%60):02d}"
-                b_duration = format_duration(block['end_sec'] - block['start_sec'])
-                
-                file_path = block['file']
-                if file_path and not file_path.startswith('['):
-                    file_path = os.path.basename(file_path)
-                
-                group.add_record(b_start, b_end, b_duration, block['app'], file_path or '-')
-            
-            self.project_groups_layout.addWidget(group)
-            self.project_groups['未分配'] = group
-        
-        # 处理有父子关系的项目
-        for project in sorted(top_level_projects):
-            proj_blocks = projects_data[project]
-            
-            # 计算父项目统计
+        for project, proj_blocks in sorted(projects_data.items()):
+            # 计算项目统计
             proj_total = sum(b['end_sec'] - b['start_sec'] for b in proj_blocks)
             proj_start = min(b['start_sec'] for b in proj_blocks)
             proj_end = max(b['end_sec'] for b in proj_blocks)
@@ -1643,18 +1571,20 @@ class DataDashboardWindow(QDialog):
             total_seconds += proj_total
             total_records += proj_records
             
+            # 格式化时间
             start_time_str = f"{int(proj_start//3600):02d}:{int((proj_start%3600)//60):02d}"
             end_time_str = f"{int(proj_end//3600):02d}:{int((proj_end%3600)//60):02d}"
             
-            # 创建父项目分组
+            # 创建项目分组
             group = ProjectGroupWidget(project, proj_total, start_time_str, end_time_str, proj_records)
             
-            # 添加父项目的记录
+            # 添加记录
             for block in sorted(proj_blocks, key=lambda x: x['start_sec']):
                 b_start = f"{int(block['start_sec']//3600):02d}:{int((block['start_sec']%3600)//60):02d}:{int(block['start_sec']%60):02d}"
                 b_end = f"{int(block['end_sec']//3600):02d}:{int((block['end_sec']%3600)//60):02d}:{int(block['end_sec']%60):02d}"
                 b_duration = format_duration(block['end_sec'] - block['start_sec'])
                 
+                # 文件路径处理
                 file_path = block['file']
                 if file_path and not file_path.startswith('['):
                     file_path = os.path.basename(file_path)
@@ -1663,47 +1593,12 @@ class DataDashboardWindow(QDialog):
             
             self.project_groups_layout.addWidget(group)
             self.project_groups[project] = group
-            
-            # 处理子项目
-            children = project_dict.get(project, {}).get('children', [])
-            for child_name in sorted(children):
-                if child_name in projects_data:
-                    child_blocks = projects_data[child_name]
-                    
-                    child_total = sum(b['end_sec'] - b['start_sec'] for b in child_blocks)
-                    child_start = min(b['start_sec'] for b in child_blocks)
-                    child_end = max(b['end_sec'] for b in child_blocks)
-                    child_records = len(child_blocks)
-                    
-                    total_seconds += child_total
-                    total_records += child_records
-                    
-                    child_start_str = f"{int(child_start//3600):02d}:{int((child_start%3600)//60):02d}"
-                    child_end_str = f"{int(child_end//3600):02d}:{int((child_end%3600)//60):02d}"
-                    
-                    # 创建子项目分组（使用 SubProjectGroupWidget）
-                    child_group = SubProjectGroupWidget(child_name, child_total, child_records)
-                    
-                    # 添加子项目的记录
-                    for block in sorted(child_blocks, key=lambda x: x['start_sec']):
-                        b_start = f"{int(block['start_sec']//3600):02d}:{int((block['start_sec']%3600)//60):02d}:{int(block['start_sec']%60):02d}"
-                        b_end = f"{int(block['end_sec']//3600):02d}:{int((block['end_sec']%3600)//60):02d}:{int(block['end_sec']%60):02d}"
-                        b_duration = format_duration(block['end_sec'] - block['start_sec'])
-                        
-                        file_path = block['file']
-                        if file_path and not file_path.startswith('['):
-                            file_path = os.path.basename(file_path)
-                        
-                        child_group.add_record(b_start, b_end, b_duration, block['app'], file_path or '-')
-                    
-                    group.content_layout.addWidget(child_group)
-                    self.project_groups[child_name] = child_group
         
         # 更新统计
         total_hours = total_seconds // 3600
         total_minutes = (total_seconds % 3600) // 60
         
-        unique_projects = len(set(b['project'] for b in blocks if b['project'] != '未分配'))
+        unique_projects = len(projects_data)
         unique_apps = len(set(b['app'] for b in blocks))
         
         self.lbl_project_stats.setText(
@@ -1782,11 +1677,11 @@ class DataDashboardWindow(QDialog):
         if current_block:
             blocks.append(current_block)
         
-        # 查询项目信息（包括 parent_id）
+        # 查询项目信息
         for block in blocks:
             if block['file'] and not block['file'].startswith('['):
                 proj_query = """
-                    SELECT p.project_name, p.parent_id
+                    SELECT p.project_name 
                     FROM file_assignment fa
                     JOIN projects p ON fa.project_id = p.id
                     WHERE fa.file_path = ?
@@ -1794,47 +1689,15 @@ class DataDashboardWindow(QDialog):
                 result = conn.execute(proj_query, (block['file'],)).fetchone()
                 if result:
                     block['project'] = result[0]
-                    block['parent_id'] = result[1]
                 else:
                     block['project'] = '未分配'
-                    block['parent_id'] = None
             else:
                 block['project'] = '未分配'
-                block['parent_id'] = None
-        
-        # 查询所有项目信息，构建父子关系
-        projects_query = "SELECT project_name, id, parent_id FROM projects"
-        all_projects = conn.execute(projects_query).fetchall()
-        
-        # 构建项目字典
-        project_dict = {}
-        for proj_name, proj_id, parent_id in all_projects:
-            project_dict[proj_name] = {
-                'id': proj_id,
-                'parent_id': parent_id,
-                'children': []
-            }
-        
-        # 获取父项目名称
-        def get_parent_name(parent_id):
-            if parent_id is None:
-                return None
-            for proj_name, proj_data in project_dict.items():
-                if proj_data['id'] == parent_id:
-                    return proj_name
-            return None
-        
-        # 构建父子关系
-        for proj_name, proj_data in project_dict.items():
-            if proj_data['parent_id'] is not None:
-                parent_name = get_parent_name(proj_data['parent_id'])
-                if parent_name and parent_name in project_dict:
-                    project_dict[parent_name]['children'].append(proj_name)
         
         conn.close()
         
         # 按项目分组
-        projects_data = {}
+        projects_data = {}  # {project: [blocks]}
         
         for block in blocks:
             project = block['project']
@@ -1848,101 +1711,8 @@ class DataDashboardWindow(QDialog):
         total_time_slots = 0
         total_records = 0
         
-        # 只遍历顶级项目
-        top_level_projects = [name for name, data in project_dict.items() 
-                             if data['parent_id'] is None and name in projects_data]
-        
-        # 处理未分配项目
-        unassigned_blocks = projects_data.get('未分配', [])
-        if unassigned_blocks:
-            unassigned_blocks.sort(key=lambda x: x['start_sec'])
-            
-            time_slots = []
-            current_slot = None
-            
-            for block in unassigned_blocks:
-                if current_slot is None:
-                    current_slot = {
-                        'start_sec': block['start_sec'],
-                        'end_sec': block['end_sec'],
-                        'blocks': [block]
-                    }
-                else:
-                    if block['start_sec'] - current_slot['end_sec'] <= threshold_seconds:
-                        current_slot['end_sec'] = max(current_slot['end_sec'], block['end_sec'])
-                        current_slot['blocks'].append(block)
-                    else:
-                        time_slots.append(current_slot)
-                        current_slot = {
-                            'start_sec': block['start_sec'],
-                            'end_sec': block['end_sec'],
-                            'blocks': [block]
-                        }
-            
-            if current_slot:
-                time_slots.append(current_slot)
-            
-            proj_total = sum(slot['end_sec'] - slot['start_sec'] for slot in time_slots)
-            total_seconds += proj_total
-            total_time_slots += len(time_slots)
-            total_records += sum(len(slot['blocks']) for slot in time_slots)
-            
-            proj_start = min(slot['start_sec'] for slot in time_slots)
-            proj_end = max(slot['end_sec'] for slot in time_slots)
-            start_time_str = f"{int(proj_start//3600):02d}:{int((proj_start%3600)//60):02d}"
-            end_time_str = f"{int(proj_end//3600):02d}:{int((proj_end%3600)//60):02d}"
-            
-            group = ProjectGroupWidget('未分配', proj_total, start_time_str, end_time_str, total_records)
-            
-            for idx, slot in enumerate(time_slots):
-                slot_start = f"{int(slot['start_sec']//3600):02d}:{int((slot['start_sec']%3600)//60):02d}"
-                slot_end = f"{int(slot['end_sec']//3600):02d}:{int((slot['end_sec']%3600)//60):02d}"
-                slot_duration = slot['end_sec'] - slot['start_sec']
-                
-                slot_hour = slot['start_sec'] // 3600
-                if 5 <= slot_hour < 12:
-                    slot_name = "上午"
-                elif 12 <= slot_hour < 14:
-                    slot_name = "中午"
-                elif 14 <= slot_hour < 18:
-                    slot_name = "下午"
-                elif 18 <= slot_hour < 22:
-                    slot_name = "晚上"
-                else:
-                    slot_name = "深夜"
-                
-                slot_name = f"{slot_name}会话{idx+1}"
-                
-                apps_in_slot = {}
-                for block in slot['blocks']:
-                    app = block['app']
-                    if app not in apps_in_slot:
-                        apps_in_slot[app] = 0
-                    apps_in_slot[app] += block['end_sec'] - block['start_sec']
-                
-                apps_used = ' → '.join(apps_in_slot.keys())
-                
-                time_slot_widget = TimeSlotWidget(slot_name, slot_start, slot_end, slot_duration, apps_used)
-                
-                for block in slot['blocks']:
-                    b_start = f"{int(block['start_sec']//3600):02d}:{int((block['start_sec']%3600)//60):02d}:{int(block['start_sec']%60):02d}"
-                    b_end = f"{int(block['end_sec']//3600):02d}:{int((block['end_sec']%3600)//60):02d}:{int(block['end_sec']%60):02d}"
-                    b_duration = format_duration(block['end_sec'] - block['start_sec'])
-                    
-                    file_path = block['file']
-                    if file_path and not file_path.startswith('['):
-                        file_path = os.path.basename(file_path)
-                    
-                    time_slot_widget.add_record(b_start, b_end, b_duration, block['app'], file_path or '-')
-                
-                group.content_layout.addWidget(time_slot_widget)
-            
-            self.time_slots_groups_layout.addWidget(group)
-            self.time_slot_groups['未分配'] = group
-        
-        # 处理有父子关系的项目
-        for project in sorted(top_level_projects):
-            proj_blocks = projects_data[project]
+        for project, proj_blocks in sorted(projects_data.items()):
+            # 按开始时间排序
             proj_blocks.sort(key=lambda x: x['start_sec'])
             
             # 聚合时间段
@@ -1957,10 +1727,12 @@ class DataDashboardWindow(QDialog):
                         'blocks': [block]
                     }
                 else:
+                    # 如果间隔小于阈值，合并到当前时间段
                     if block['start_sec'] - current_slot['end_sec'] <= threshold_seconds:
                         current_slot['end_sec'] = max(current_slot['end_sec'], block['end_sec'])
                         current_slot['blocks'].append(block)
                     else:
+                        # 否则创建新的时间段
                         time_slots.append(current_slot)
                         current_slot = {
                             'start_sec': block['start_sec'],
@@ -1971,60 +1743,27 @@ class DataDashboardWindow(QDialog):
             if current_slot:
                 time_slots.append(current_slot)
             
-            # 计算父项目统计
+            # 创建项目分组
             proj_total = sum(slot['end_sec'] - slot['start_sec'] for slot in time_slots)
             total_seconds += proj_total
             total_time_slots += len(time_slots)
             total_records += sum(len(slot['blocks']) for slot in time_slots)
             
+            # 格式化时间范围
             proj_start = min(slot['start_sec'] for slot in time_slots)
             proj_end = max(slot['end_sec'] for slot in time_slots)
             start_time_str = f"{int(proj_start//3600):02d}:{int((proj_start%3600)//60):02d}"
             end_time_str = f"{int(proj_end//3600):02d}:{int((proj_end%3600)//60):02d}"
             
-            # 创建父项目分组
             group = ProjectGroupWidget(project, proj_total, start_time_str, end_time_str, total_records)
-            group.header_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #1E3A5F;
-                    color: #64B5F6;
-                    font-weight: bold;
-                    font-size: 13px;
-                    padding: 8px 15px;
-                    border: 1px solid #2E5A8F;
-                    border-radius: 4px;
-                    text-align: left;
-                }
-                QPushButton:hover {
-                    background-color: #2E5A8F;
-                }
-                QPushButton:checked {
-                    background-color: #1E3A5F;
-                    border-bottom-left-radius: 0;
-                    border-bottom-right-radius: 0;
-                }
-            """)
             
-            # 为父项目创建时间段组件
-            for idx, slot in enumerate(time_slots):
+            # 为每个时间段创建子组件
+            for slot in time_slots:
                 slot_start = f"{int(slot['start_sec']//3600):02d}:{int((slot['start_sec']%3600)//60):02d}"
                 slot_end = f"{int(slot['end_sec']//3600):02d}:{int((slot['end_sec']%3600)//60):02d}"
                 slot_duration = slot['end_sec'] - slot['start_sec']
                 
-                slot_hour = slot['start_sec'] // 3600
-                if 5 <= slot_hour < 12:
-                    slot_name = "上午"
-                elif 12 <= slot_hour < 14:
-                    slot_name = "中午"
-                elif 14 <= slot_hour < 18:
-                    slot_name = "下午"
-                elif 18 <= slot_hour < 22:
-                    slot_name = "晚上"
-                else:
-                    slot_name = "深夜"
-                
-                slot_name = f"{slot_name}会话{idx+1}"
-                
+                # 收集该时间段使用的应用
                 apps_in_slot = {}
                 for block in slot['blocks']:
                     app = block['app']
@@ -2032,10 +1771,12 @@ class DataDashboardWindow(QDialog):
                         apps_in_slot[app] = 0
                     apps_in_slot[app] += block['end_sec'] - block['start_sec']
                 
-                apps_used = ' → '.join(apps_in_slot.keys())
+                apps_used = ', '.join([f"{app}" for app in apps_in_slot.keys()])
                 
-                time_slot_widget = TimeSlotWidget(slot_name, slot_start, slot_end, slot_duration, apps_used)
+                # 创建时间段组件
+                time_slot_widget = TimeSlotWidget(slot_start, slot_end, slot_duration, apps_used)
                 
+                # 添加详细记录
                 for block in slot['blocks']:
                     b_start = f"{int(block['start_sec']//3600):02d}:{int((block['start_sec']%3600)//60):02d}:{int(block['start_sec']%60):02d}"
                     b_end = f"{int(block['end_sec']//3600):02d}:{int((block['end_sec']%3600)//60):02d}:{int(block['end_sec']%60):02d}"
@@ -2051,117 +1792,6 @@ class DataDashboardWindow(QDialog):
             
             self.time_slots_groups_layout.addWidget(group)
             self.time_slot_groups[project] = group
-            
-            # 处理子项目
-            children = project_dict.get(project, {}).get('children', [])
-            for child_name in sorted(children):
-                if child_name in projects_data:
-                    child_blocks = projects_data[child_name]
-                    child_blocks.sort(key=lambda x: x['start_sec'])
-                    
-                    # 聚合子项目的时间段
-                    child_time_slots = []
-                    current_slot = None
-                    
-                    for block in child_blocks:
-                        if current_slot is None:
-                            current_slot = {
-                                'start_sec': block['start_sec'],
-                                'end_sec': block['end_sec'],
-                                'blocks': [block]
-                            }
-                        else:
-                            if block['start_sec'] - current_slot['end_sec'] <= threshold_seconds:
-                                current_slot['end_sec'] = max(current_slot['end_sec'], block['end_sec'])
-                                current_slot['blocks'].append(block)
-                            else:
-                                child_time_slots.append(current_slot)
-                                current_slot = {
-                                    'start_sec': block['start_sec'],
-                                    'end_sec': block['end_sec'],
-                                    'blocks': [block]
-                                }
-                    
-                    if current_slot:
-                        child_time_slots.append(current_slot)
-                    
-                    child_total = sum(slot['end_sec'] - slot['start_sec'] for slot in child_time_slots)
-                    child_records = sum(len(slot['blocks']) for slot in child_time_slots)
-                    
-                    total_seconds += child_total
-                    total_records += child_records
-                    
-                    # 创建子项目分组（使用不同的样式）
-                    child_group = SubProjectGroupWidget(child_name, child_total, child_records)
-                    # 设置时间段视图的子项目样式
-                    child_group.header_btn.setStyleSheet("""
-                        QPushButton {
-                            background-color: #2A4A5A;
-                            color: #80CBC4;
-                            font-size: 11px;
-                            font-weight: normal;
-                            padding: 4px 8px;
-                            border: 1px dashed #3E7E7E;
-                            border-radius: 3px;
-                            text-align: left;
-                        }
-                        QPushButton:hover {
-                            background-color: #355A6A;
-                            border: 1px dashed #4E9E9E;
-                        }
-                        QPushButton:checked {
-                            background-color: #2A4A5A;
-                            border-bottom-left-radius: 0;
-                            border-bottom-right-radius: 0;
-                        }
-                    """)
-                    
-                    # 为子项目创建时间段组件
-                    for idx, slot in enumerate(child_time_slots):
-                        slot_start = f"{int(slot['start_sec']//3600):02d}:{int((slot['start_sec']%3600)//60):02d}"
-                        slot_end = f"{int(slot['end_sec']//3600):02d}:{int((slot['end_sec']%3600)//60):02d}"
-                        slot_duration = slot['end_sec'] - slot['start_sec']
-                        
-                        slot_hour = slot['start_sec'] // 3600
-                        if 5 <= slot_hour < 12:
-                            slot_name = "上午"
-                        elif 12 <= slot_hour < 14:
-                            slot_name = "中午"
-                        elif 14 <= slot_hour < 18:
-                            slot_name = "下午"
-                        elif 18 <= slot_hour < 22:
-                            slot_name = "晚上"
-                        else:
-                            slot_name = "深夜"
-                        
-                        slot_name = f"{slot_name}会话{idx+1}"
-                        
-                        apps_in_slot = {}
-                        for block in slot['blocks']:
-                            app = block['app']
-                            if app not in apps_in_slot:
-                                apps_in_slot[app] = 0
-                            apps_in_slot[app] += block['end_sec'] - block['start_sec']
-                        
-                        apps_used = ' → '.join(apps_in_slot.keys())
-                        
-                        child_slot_widget = TimeSlotWidget(slot_name, slot_start, slot_end, slot_duration, apps_used)
-                        
-                        for block in slot['blocks']:
-                            b_start = f"{int(block['start_sec']//3600):02d}:{int((block['start_sec']%3600)//60):02d}:{int(block['start_sec']%60):02d}"
-                            b_end = f"{int(block['end_sec']//3600):02d}:{int((block['end_sec']%3600)//60):02d}:{int(block['end_sec']%60):02d}"
-                            b_duration = format_duration(block['end_sec'] - block['start_sec'])
-                            
-                            file_path = block['file']
-                            if file_path and not file_path.startswith('['):
-                                file_path = os.path.basename(file_path)
-                            
-                            child_slot_widget.add_record(b_start, b_end, b_duration, block['app'], file_path or '-')
-                        
-                        child_group.content_layout.addWidget(child_slot_widget)
-                    
-                    group.content_layout.addWidget(child_group)
-                    self.time_slot_groups[child_name] = child_group
         
         # 更新统计
         total_hours = total_seconds // 3600
