@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox, 
     QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog
 )
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont, QPainter, QColor, QPen, QBrush
 from PySide6.QtCore import Qt, QModelIndex, QTimer, QItemSelectionModel
 
 from core.database import get_connection, init_db, get_db_path, set_db_path
@@ -204,6 +204,197 @@ class SettingsDialog(QDialog):
             conn.close()
             self.accept()
 
+# ================= 极客时间轴组件 =================
+# ================= 极客交互式时间轴组件 (可缩放/拖拽) =================
+
+class TimelineWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(60)  # 固定高度
+        self.blocks = []  
+        self.setToolTipDuration(0)
+        self.setMouseTracking(True)
+        
+        # --- 镜头系统 (Camera) 状态变量 ---
+        self.view_start = 0      # 当前视口左边缘代表的秒数 (0 = 凌晨0点)
+        self.view_end = 86400    # 当前视口右边缘代表的秒数 (86400 = 晚上24点)
+        
+        # --- 拖拽交互状态 ---
+        self.is_dragging = False
+        self.last_mouse_x = 0
+
+    def update_data(self, blocks):
+        self.blocks = blocks
+        self.update()
+
+    # --- 数学映射工具 ---
+    def pixel_to_time(self, x, width):
+        return self.view_start + (x / width) * (self.view_end - self.view_start)
+
+    def time_to_pixel(self, t, width):
+        if self.view_end == self.view_start: return 0
+        return (t - self.view_start) / (self.view_end - self.view_start) * width
+
+    # --- 交互 1：滚轮丝滑缩放 (Zoom) ---
+    # --- 交互 1：滚轮与妙控板丝滑缩放 (Zoom) ---
+    def wheelEvent(self, event):
+        # 【修复1】：兼容妙控板 (pixelDelta) 和普通鼠标 (angleDelta)
+        pixel_y = event.pixelDelta().y()
+        angle_y = event.angleDelta().y()
+        
+        # 优先使用妙控板的高精度像素偏移，没有的话退化为普通鼠标的齿轮偏移
+        delta = pixel_y if pixel_y != 0 else angle_y
+        if delta == 0: return
+
+        width = self.width()
+        x = event.position().x()
+        
+        # 获取鼠标当前指向的时间点（缩放锚点，保证鼠标指着的地方在缩放时不乱跑）
+        t_anchor = self.pixel_to_time(x, width)
+        
+        span = self.view_end - self.view_start
+        
+        # 【修复1补充】：为了让妙控板平滑缩放，缩放比例与滑动距离成正比
+        # 普通鼠标的 angle_y 一般是 120，妙控板的 pixel_y 可能是个位数
+        zoom_factor = abs(delta) * 0.002
+        # 防止单次滑动过猛，限制最大缩放比例为 30%
+        zoom_factor = min(zoom_factor, 0.3)
+        
+        if delta > 0: span *= (1 - zoom_factor) # 放大 (视口时间变短)
+        else: span *= (1 + zoom_factor)         # 缩小 (视口时间变长)
+
+        # 极限限制：最多放大到看 2 分钟，最退放大到看全天(24小时)
+        span = max(120, min(86400, span)) 
+
+        # 根据锚点重新计算左右边界
+        new_start = t_anchor - (x / width) * span
+        new_end = new_start + span
+
+        # 碰撞检测：不能超出 0 点和 24 点的物理边界
+        if new_start < 0:
+            new_start = 0
+            new_end = span
+        if new_end > 86400:
+            new_end = 86400
+            new_start = 86400 - span
+
+        self.view_start, self.view_end = new_start, new_end
+        self.update()
+
+    # --- 交互 2：按住左键拖拽平移 (Pan) ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = True
+            self.last_mouse_x = event.position().x()
+            self.setCursor(Qt.ClosedHandCursor) # 鼠标变成小抓手
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False
+            self.setCursor(Qt.ArrowCursor)
+
+    def mouseMoveEvent(self, event):
+        x = event.position().x()
+        width = self.width()
+
+        if self.is_dragging:
+            # 计算鼠标移动了多少像素，换算成多少秒
+            pixel_delta = x - self.last_mouse_x
+            time_delta = -(pixel_delta / width) * (self.view_end - self.view_start)
+
+            new_start = self.view_start + time_delta
+            new_end = self.view_end + time_delta
+
+            # 碰撞检测：防止拖出全天的边界
+            if new_start < 0: time_delta = -self.view_start
+            elif new_end > 86400: time_delta = 86400 - self.view_end
+
+            self.view_start += time_delta
+            self.view_end += time_delta
+            self.last_mouse_x = x
+            self.update()
+            
+        else:
+            # 悬停显示详情气泡
+            hover_sec = self.pixel_to_time(x, width)
+            found = False
+            for (start, end, app, fpath, is_idle) in self.blocks:
+                if start <= hover_sec <= end:
+                    start_str = f"{int(start//3600):02d}:{int((start%3600)//60):02d}"
+                    end_str = f"{int(end//3600):02d}:{int((end%3600)//60):02d}"
+                    if is_idle:
+                        self.setToolTip(f"💤 闲置 / 休息\n{start_str} - {end_str}")
+                    else:
+                        d_path = fpath if fpath.startswith("[") else os.path.basename(fpath)
+                        self.setToolTip(f"⏱️ {app}\n📄 {d_path}\n{start_str} - {end_str}")
+                    found = True
+                    break
+            if not found: self.setToolTip("")
+
+    def _get_app_color(self, app_name, is_idle):
+        if is_idle: return QColor("#4A4A4A")
+        lower_app = app_name.lower()
+        if "after effects" in lower_app: return QColor("#9999FF")
+        if "premiere" in lower_app: return QColor("#EA77FF")
+        if "photoshop" in lower_app: return QColor("#31A8FF")
+        if "illustrator" in lower_app: return QColor("#FF9A00")
+        if "blender" in lower_app: return QColor("#E87D0D")
+        if "chrome" in lower_app or "safari" in lower_app or "edge" in lower_app: return QColor("#00B4AB")
+        h = hash(app_name) % 360
+        color = QColor()
+        color.setHsv(h, 150, 200)
+        return color
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        width, height = self.width(), self.height()
+        
+        # 1. 黑板底色
+        painter.fillRect(0, 0, width, height, QColor("#1E1E1E"))
+        
+        # 2. 动态智能刻度网格 (Zoom In 时显示分钟，Zoom Out 时显示小时)
+        span = self.view_end - self.view_start
+        if span > 12 * 3600: step = 6 * 3600    # 看全天：每6小时一根线
+        elif span > 4 * 3600: step = 3600       # 看半天：每1小时一根线
+        elif span > 3600: step = 1800           # 看几小时：每30分钟一根线
+        elif span > 600: step = 300             # 看半小时：每5分钟一根线
+        else: step = 60                         # 极度放大：每1分钟一根线
+
+        first_line = int(self.view_start // step) * step
+        painter.setPen(QPen(QColor("#555555"), 1, Qt.DashLine))
+        for t in range(first_line, int(self.view_end) + 1, step):
+            if t < 0 or t > 86400: continue
+            x = int(self.time_to_pixel(t, width))
+            painter.drawLine(x, 0, x, height)
+            
+            # 画文字刻度
+            h, m = t // 3600, (t % 3600) // 60
+            text = f"{h}:00" if step >= 3600 else f"{h:02d}:{m:02d}"
+            painter.setPen(QColor("#888888"))
+            painter.drawText(x + 5, 15, text)
+            painter.setPen(QPen(QColor("#555555"), 1, Qt.DashLine))
+
+        # 3. 绘制色块 (具备视口裁剪功能，看不见的就不画，提升性能)
+        painter.setPen(Qt.NoPen)
+        for (start, end, app, fpath, is_idle) in self.blocks:
+            if end < self.view_start or start > self.view_end: continue # 不在视口内，跳过
+            
+            x_start = self.time_to_pixel(max(start, self.view_start), width)
+            x_end = self.time_to_pixel(min(end, self.view_end), width)
+            block_w = max(1.5, x_end - x_start) # 最窄 1.5 像素，太细了看不清
+            
+            color = self._get_app_color(app, is_idle)
+            painter.setBrush(QBrush(color))
+            painter.drawRect(int(x_start), 20, int(block_w), height - 20)
+
+        # 4. 实时红线 (当前时间)
+        now = datetime.now()
+        now_sec = now.hour * 3600 + now.minute * 60 + now.second
+        if self.view_start <= now_sec <= self.view_end:
+            now_x = int(self.time_to_pixel(now_sec, width))
+            painter.setPen(QPen(QColor("#FF4500"), 2))
+            painter.drawLine(now_x, 0, now_x, height)
 # ================= 主窗口 =================
 
 class DashboardV2(QMainWindow):
@@ -333,7 +524,9 @@ class DashboardV2(QMainWindow):
         self.tree_inbox.setColumnWidth(3, 70)
         self.tree_inbox.setSortingEnabled(True)         # 允许点击表头排序
         self.model_inbox.setSortRole(Qt.UserRole + 3)   # 告诉它按底层数字大小排，而不是按字符串排
-
+# --- 5. 【新增】底部时间轴 ---
+        self.timeline = TimelineWidget()
+        main_layout.addWidget(self.timeline)
     def open_database_manager(self):
         if DatabaseManagerDialog(self).exec():
             # 切换数据库后，强制清空旧的展开状态，重新加载
@@ -447,6 +640,7 @@ class DashboardV2(QMainWindow):
 
         self._load_inbox_data()
         self._update_top_stats()
+        self._update_timeline()  # 【新增】触发时间轴重绘
 
     def _update_tree_durations_in_place(self, parent_item=None, conn=None):
         # 递归静默更新左侧项目树的时间数字，不动节点结构
@@ -567,6 +761,63 @@ class DashboardV2(QMainWindow):
             self.lbl_stats_bar.setText("📊 当前关注项目:  未选中 / 无归属    |    今日累积:  0分0秒    |    历史总计:  0分0秒")
         conn.close()
 
+    def _update_timeline(self):
+        # 提取今日所有秒级日志，聚合成连续的时间块
+        conn = get_connection()
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        
+        # 1. 查出今天的真实工作记录
+        # 1. 查出今天的真实工作记录
+        # 【修复2】：去掉 'localtime' 修饰符，因为存入数据库的 datetime.now().isoformat() 本身就已经是本地时间了！
+        # 如果再次加 'localtime' 会导致 SQLite 进行二次时区转换，从而把昨天半夜 23 点错认为今天。
+        logs = conn.execute("""
+            SELECT timestamp, duration, app_name, file_path 
+            FROM activity_log 
+            WHERE DATE(SUBSTR(timestamp, 1, 10)) = ?
+            ORDER BY timestamp ASC
+        """, (today_str,)).fetchall()
+        
+        # 2. 查出今天的闲置记录 (从 runtime_status 衍生，或者由于后台在闲置时根本不记入 activity_log，这里会有时间断层)
+        # 我们用“找时间断层”的方法，反推你今天几点在闲置！
+        
+        blocks = []
+        if not logs:
+            self.timeline.update_data(blocks)
+            conn.close()
+            return
+            
+        current_block = None
+        
+        for timestamp_str, duration, app, fpath in logs:
+            try:
+                dt = datetime.fromisoformat(timestamp_str.split('.')[0])
+                # 计算该记录发生的时间，属于今天的第几秒
+                start_sec = dt.hour * 3600 + dt.minute * 60 + dt.second
+                end_sec = start_sec + duration
+                
+                if current_block is None:
+                    current_block = [start_sec, end_sec, app, fpath, False]
+                else:
+                    # 如果这条记录紧挨着上一条(断层 < 60秒)，并且软件名一样，我们就把它粘合(聚合)成一个大色块
+                    if start_sec - current_block[1] <= 60 and app == current_block[2]:
+                        current_block[1] = end_sec
+                    else:
+                        # 如果换了软件，或者发生了长达 1 分钟以上的断层(说明你刚才发呆了或者离开了电脑)
+                        blocks.append(current_block)
+                        
+                        # 把这中间的断层，画成灰色的“闲置色块”
+                        if start_sec - current_block[1] > 60:
+                            blocks.append([current_block[1], start_sec, "Idle", "", True])
+                            
+                        current_block = [start_sec, end_sec, app, fpath, False]
+            except:
+                pass
+                
+        if current_block:
+            blocks.append(current_block)
+            
+        self.timeline.update_data(blocks)
+        conn.close()
     def _build_project_tree_recursive(self, node, parent_item, show_archived):
         stats = get_project_stats(node.id, include_children=False)
         prefix = "📦 [归档] " if node.is_archived else "📁 "
