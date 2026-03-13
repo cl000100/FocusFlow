@@ -12,12 +12,12 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTreeView, QHeaderView, QLabel, QPushButton, QMenu,
     QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox, 
-    QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem
+    QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog
 )
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont
 from PySide6.QtCore import Qt, QModelIndex, QTimer, QItemSelectionModel
 
-from core.database import get_connection, init_db
+from core.database import get_connection, init_db, get_db_path, set_db_path
 from core.project_tree import (
     load_project_tree, get_project_stats, get_all_projects_flat, 
     get_project_files, create_project, delete_project, 
@@ -110,6 +110,44 @@ class ProjectRulesDialog(QDialog):
             conn.commit()
             conn.close()
             self.load_data()
+
+class DatabaseManagerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🗄️ 数据库管理")
+        self.setMinimumWidth(450)
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("当前正在使用的数据库："))
+        self.lbl_current_db = QLabel(get_db_path())
+        self.lbl_current_db.setStyleSheet("color: #9CDCFE; font-weight: bold; word-break: break-all;")
+        layout.addWidget(self.lbl_current_db)
+
+        btn_layout = QHBoxLayout()
+        btn_new = QPushButton("➕ 新建空数据库")
+        btn_new.clicked.connect(self.create_new_db)
+        btn_load = QPushButton("📂 载入已有数据库")
+        btn_load.clicked.connect(self.load_existing_db)
+
+        btn_layout.addWidget(btn_new)
+        btn_layout.addWidget(btn_load)
+        layout.addLayout(btn_layout)
+
+    def create_new_db(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "新建数据库", "", "SQLite Database (*.db)")
+        if file_path:
+            if not file_path.endswith('.db'): file_path += '.db'
+            set_db_path(file_path)
+            init_db()  # 初始化新库的表结构
+            QMessageBox.information(self, "成功", "已创建并切换到新数据库！\n后台进程将自动跟随切换。")
+            self.accept()
+
+    def load_existing_db(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "载入数据库", "", "SQLite Database (*.db)")
+        if file_path:
+            set_db_path(file_path)
+            QMessageBox.information(self, "成功", "已切换到目标数据库！\n后台进程将自动跟随切换。")
+            self.accept()
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -215,8 +253,13 @@ class DashboardV2(QMainWindow):
         
         self.btn_blacklist = QPushButton("🚫 黑名单")
         self.btn_blacklist.clicked.connect(self.open_blacklist)
+        self.btn_db = QPushButton("🗄️ 数据库")
+        self.btn_db.clicked.connect(self.open_database_manager)
+        
         self.btn_settings = QPushButton("⚙ 设置")
         self.btn_settings.clicked.connect(self.open_settings)
+        
+        header_layout.addWidget(self.btn_db)
         header_layout.addWidget(self.btn_blacklist)
         header_layout.addWidget(self.btn_settings)
         main_layout.addWidget(header)
@@ -281,7 +324,16 @@ class DashboardV2(QMainWindow):
         self.tree_inbox.setColumnWidth(0, 220)
         self.tree_inbox.setColumnWidth(2, 70)
         self.tree_inbox.setColumnWidth(3, 70)
-        self.tree_inbox.setColumnWidth(4, 110)
+        self.tree_inbox.setSortingEnabled(True)         # 允许点击表头排序
+        self.model_inbox.setSortRole(Qt.UserRole + 3)   # 告诉它按底层数字大小排，而不是按字符串排
+
+    def open_database_manager(self):
+        if DatabaseManagerDialog(self).exec():
+            # 切换数据库后，强制清空旧的展开状态，重新加载
+            self.expanded_uids.clear()
+            self.selected_uid_left = None
+            self.selected_path_right = None
+            self.refresh_data()
 
     def open_settings(self):
         if SettingsDialog(self).exec(): self.refresh_data()
@@ -355,22 +407,80 @@ class DashboardV2(QMainWindow):
             if model.hasChildren(index): self._restore_left_recursive(index)
 
     # ================= 核心刷新逻辑 =================
+    # ================= 核心刷新逻辑 =================
     def refresh_data(self):
         self._auto_assign_from_rules()
-        self.save_tree_state()
         
-        # 【修改点3】：为了保证右侧完美不跳跃，采用“智能更新”而不是全删全建
-        self.model_projects.removeRows(0, self.model_projects.rowCount())
+        # 【修复：左侧项目树智能刷新检测】
+        # 计算当前项目的“结构指纹”（只有在新建/删除项目，或者新分配了文件时，指纹才会变）
+        conn = get_connection()
+        projs = conn.execute("SELECT id, parent_id, project_name FROM projects").fetchall()
+        archs = conn.execute("SELECT project_id FROM project_archive").fetchall()
+        files = conn.execute("SELECT file_path, project_id FROM file_assignment").fetchall()
+        conn.close()
         
-        show_archived = self.chk_archived.isChecked()
-        tree = load_project_tree()
-        for root in tree.get_root_nodes():
-            if not root.is_archived or show_archived:
-                self._build_project_tree_recursive(root, self.model_projects.invisibleRootItem(), show_archived)
-                
+        current_tree_hash = hash(str(projs) + str(archs) + str(files) + str(self.chk_archived.isChecked()))
+        
+        if getattr(self, 'last_tree_hash', None) != current_tree_hash:
+            # 结构发生了变化（如新建了项目、刚分配了文件），执行带状态恢复的全量重绘
+            self.save_tree_state()
+            self.model_projects.removeRows(0, self.model_projects.rowCount())
+            
+            show_archived = self.chk_archived.isChecked()
+            tree = load_project_tree()
+            for root in tree.get_root_nodes():
+                if not root.is_archived or show_archived:
+                    self._build_project_tree_recursive(root, self.model_projects.invisibleRootItem(), show_archived)
+                    
+            self.restore_tree_state()
+            self.last_tree_hash = current_tree_hash
+        else:
+            # 结构完全没变，仅仅是时间数字在增加！执行极速静默更新，绝对不破坏焦点和层级
+            self._update_tree_durations_in_place()
+
         self._load_inbox_data()
-        self.restore_tree_state()
         self._update_top_stats()
+
+    def _update_tree_durations_in_place(self, parent_item=None, conn=None):
+        # 递归静默更新左侧项目树的时间数字，不动节点结构
+        is_root_call = False
+        if conn is None:
+            conn = get_connection()
+            is_root_call = True
+            
+        if parent_item is None:
+            parent_item = self.model_projects.invisibleRootItem()
+            
+        for i in range(parent_item.rowCount()):
+            item_name = parent_item.child(i, 0)
+            item_total = parent_item.child(i, 1)
+            item_today = parent_item.child(i, 2)
+            
+            pid = item_name.data(Qt.UserRole + 1)
+            fpath = item_name.data(Qt.UserRole + 2)
+            
+            if pid:
+                # 这是一个项目，获取项目最新总时长
+                stats = get_project_stats(pid, include_children=False)
+                item_total.setText(format_duration(stats['total']))
+                item_today.setText(format_duration(stats['today']))
+            elif fpath:
+                # 这是一个文件，直接用 SQL 极速查出它的最新时长
+                row = conn.execute("""
+                    SELECT COALESCE(SUM(duration), 0), 
+                           COALESCE(SUM(CASE WHEN DATE(timestamp) = DATE('now', 'localtime') THEN duration ELSE 0 END), 0) 
+                    FROM activity_log WHERE file_path = ?
+                """, (fpath,)).fetchone()
+                if row:
+                    item_total.setText(format_duration(row[0]))
+                    item_today.setText(format_duration(row[1]))
+            
+            # 递归更新子节点
+            if item_name.hasChildren():
+                self._update_tree_durations_in_place(item_name, conn)
+                
+        if is_root_call:
+            conn.close()
 
     def _auto_assign_from_rules(self):
         conn = get_connection()
@@ -389,11 +499,38 @@ class DashboardV2(QMainWindow):
 
     def _update_top_stats(self):
         conn = get_connection()
+        
+        # 1. 优先从日志里取“此时此刻”的绝对真实状态 (最近 3 秒内有记录说明正在跑)
+        latest_log = conn.execute("SELECT app_name, file_path, timestamp FROM activity_log ORDER BY timestamp DESC LIMIT 1").fetchone()
         status_row = conn.execute("SELECT is_idle, idle_seconds, app_name, file_path FROM runtime_status WHERE id=1").fetchone()
         
         active_fpath = None
+        is_idle = True
+        idle_seconds = 0
+        app_name = "未知"
+        
         if status_row:
             is_idle, idle_seconds, app_name, active_fpath = status_row
+            
+        # 如果最新日志是几秒内产生的，强行覆盖为“正在追踪”该日志的内容，解决状态滞后
+        if latest_log:
+            l_app, l_path, l_time = latest_log
+            try:
+                seconds_ago = (datetime.now() - datetime.fromisoformat(l_time)).total_seconds()
+                if seconds_ago < 5:  # 5 秒内有动静，绝对处于追踪状态
+                    is_idle = False
+                    app_name = l_app
+                    active_fpath = l_path
+            except:
+                pass
+
+        if is_idle:
+            self.lbl_status.setText(f"💤 闲置中 ({int(idle_seconds)} 秒)")
+            self.lbl_status.setStyleSheet("color: #F6AD55; font-weight: bold; font-size: 13px;")
+        else:
+            d_path = active_fpath if active_fpath.startswith("[") else os.path.basename(active_fpath)
+            self.lbl_status.setText(f"⏱️ 正在追踪: {app_name} | {d_path}")
+            self.lbl_status.setStyleSheet("color: #68D391; font-weight: bold; font-size: 13px;")
             if is_idle:
                 self.lbl_status.setText(f"💤 闲置中 ({int(idle_seconds)} 秒)")
                 self.lbl_status.setStyleSheet("color: #F6AD55; font-weight: bold; font-size: 13px;")
@@ -503,9 +640,19 @@ class DashboardV2(QMainWindow):
                 
                 # 找到它在界面的真实行号，精准更新（杜绝张冠李戴！）
                 row_idx = existing_paths[file_path]
-                self.model_inbox.item(row_idx, 2).setText(format_duration(total))
-                self.model_inbox.item(row_idx, 3).setText(format_duration(today))
-                self.model_inbox.item(row_idx, 4).setText(time_str)
+                
+                # 【修正】：统一使用 row_idx
+                it_total = self.model_inbox.item(row_idx, 2)
+                it_total.setText(format_duration(total))
+                it_total.setData(total, Qt.UserRole + 3)
+
+                it_today = self.model_inbox.item(row_idx, 3)
+                it_today.setText(format_duration(today))
+                it_today.setData(today, Qt.UserRole + 3)
+
+                it_last = self.model_inbox.item(row_idx, 4)
+                it_last.setText(time_str)
+                it_last.setData(last_seen, Qt.UserRole + 3)
         else:
             # 只有当有全新的程序第一次加进来，或者被分配移出时，才重新排版
             self.model_inbox.removeRows(0, self.model_inbox.rowCount())
@@ -522,12 +669,26 @@ class DashboardV2(QMainWindow):
                 item_name = QStandardItem(d_name)
                 item_name.setData(file_path, Qt.UserRole + 1)
                 item_name.setData(app_name, Qt.UserRole + 2)
+                # 【新增】：给第 1 列埋入用于排序的纯文本（小写，保证字母表顺序准确）
+                item_name.setData(d_name.lower(), Qt.UserRole + 3)
                 item_name.setToolTip(file_path)
                 
                 item_dir = QStandardItem(d_dir)
+                # 【新增】：给第 2 列埋入用于排序的纯文本
+                item_dir.setData(d_dir.lower(), Qt.UserRole + 3)
                 item_dir.setToolTip(file_path)
                 
-                self.model_inbox.appendRow([item_name, item_dir, QStandardItem(format_duration(total)), QStandardItem(format_duration(today)), QStandardItem(time_str)])
+                # 【新增】：给单元格底部埋入真实秒数/时间戳，用于数学排序
+                item_total = QStandardItem(format_duration(total))
+                item_total.setData(total, Qt.UserRole + 3)
+                
+                item_today = QStandardItem(format_duration(today))
+                item_today.setData(today, Qt.UserRole + 3)
+                
+                item_last = QStandardItem(time_str)
+                item_last.setData(last_seen, Qt.UserRole + 3)
+                
+                self.model_inbox.appendRow([item_name, item_dir, item_total, item_today, item_last])
 
     # ================= 右键菜单交互 (保持不变) =================
     def show_project_menu(self, pos):

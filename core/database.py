@@ -1,12 +1,26 @@
 import sqlite3
 import os
 
-# 确保数据库路径固定在 data 文件夹下
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tracker.db")
+def get_db_path():
+    # 读取配置文件以支持动态热切换数据库
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    config_file = os.path.join(base_dir, "data", "active_db.txt")
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            custom_path = f.read().strip()
+            if custom_path and os.path.exists(os.path.dirname(custom_path)):
+                return custom_path
+    return os.path.join(base_dir, "data", "tracker.db")
 
+def set_db_path(new_path):
+    # 保存新的数据库路径
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    config_file = os.path.join(base_dir, "data", "active_db.txt")
+    with open(config_file, 'w', encoding='utf-8') as f:
+        f.write(new_path)
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    return sqlite3.connect(get_db_path())
 
 
 def init_db():
