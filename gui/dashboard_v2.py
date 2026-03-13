@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTreeView, QHeaderView, QLabel, QPushButton, QMenu,
     QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox, 
-    QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog
+    QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog, QFrame
 )
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont, QPainter, QColor, QPen, QBrush
 from PySide6.QtCore import Qt, QModelIndex, QTimer, QItemSelectionModel
@@ -216,6 +216,124 @@ class SettingsDialog(QDialog):
 
 
 # ================= 极客时间轴组件 =================
+# ================= 桌面置顶悬浮秒表 =================
+# ================= 极简苹果风桌面置顶悬浮秒表 =================
+# ================= 极简苹果风桌面置顶悬浮秒表 =================
+# ================= 极简苹果风桌面置顶悬浮秒表 =================
+
+class FloatingWidget(QWidget):
+    def __init__(self, parent_dashboard):
+        # 【修复核心】：传 None 斩断父子窗口绑定！这样主窗口最小化，悬浮窗绝对不会消失！
+        super().__init__(None) 
+        self.dashboard = parent_dashboard
+        
+        # 彻底的系统级置顶与穿透
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool | Qt.ToolTip)
+        self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        self.resize(250, 60) # 更加紧凑扁平
+        self.setup_ui()
+        
+        self._is_dragging = False
+
+    def setup_ui(self):
+        self.container = QFrame(self)
+        # 【UI优化】：去掉了明显的白线边框，使用更深邃顺滑的纯色毛玻璃底色
+        self.container.setStyleSheet("""
+            QFrame { background-color: rgba(20, 20, 22, 240); border-radius: 10px; }
+        """)
+        self.container.setGeometry(0, 0, 250, 60)
+        
+        main_layout = QVBoxLayout(self.container)
+        main_layout.setContentsMargins(15, 8, 15, 8)
+        
+        # --- 工作状态面板 ---
+        self.panel_work = QWidget()
+        work_layout = QVBoxLayout(self.panel_work)
+        work_layout.setContentsMargins(0, 0, 0, 0)
+        work_layout.setSpacing(2)
+        
+        # 第一行：项目名 (左) + [累积] [今日] (右)
+        row1 = QHBoxLayout()
+        self.fw_proj_name = QLabel("--")
+        self.fw_proj_name.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: bold;")
+        self.fw_proj_times = QLabel("00:00  00:00")
+        row1.addWidget(self.fw_proj_name)
+        row1.addStretch()
+        row1.addWidget(self.fw_proj_times)
+        
+        # 第二行：程序名 (左) + [今日] [本次] (右)
+        row2 = QHBoxLayout()
+        self.fw_app_name = QLabel("--")
+        self.fw_app_name.setStyleSheet("color: #8E8E93; font-size: 12px;")
+        self.fw_app_times = QLabel("00:00  00:00")
+        row2.addWidget(self.fw_app_name)
+        row2.addStretch()
+        row2.addWidget(self.fw_app_times)
+        
+        work_layout.addLayout(row1)
+        work_layout.addLayout(row2)
+        
+        # --- 闲置状态面板 ---
+        self.panel_idle = QWidget()
+        idle_layout = QHBoxLayout(self.panel_idle)
+        idle_layout.setContentsMargins(0, 2, 0, 2)
+        
+        lbl_idle_text = QLabel("休息中")
+        lbl_idle_text.setStyleSheet("color: #FF9F0A; font-size: 14px; font-weight: bold;")
+        self.fw_idle_time = QLabel("00:00:00")
+        self.fw_idle_time.setStyleSheet("color: #FF9F0A; font-size: 18px; font-weight: bold; font-family: monospace;")
+        
+        idle_layout.addWidget(lbl_idle_text)
+        idle_layout.addStretch()
+        idle_layout.addWidget(self.fw_idle_time)
+        
+        main_layout.addWidget(self.panel_work)
+        main_layout.addWidget(self.panel_idle)
+        self.panel_idle.hide()
+
+    def sync_data(self, is_idle, idle_sec, p_name, p_today, p_total, a_name, a_today, session_sec):
+        if is_idle:
+            self.panel_work.hide()
+            self.panel_idle.show()
+            h, rem = divmod(int(idle_sec), 3600)
+            m, s = divmod(rem, 60)
+            self.fw_idle_time.setText(f"{h:02d}:{m:02d}:{s:02d}" if h>0 else f"{m:02d}:{s:02d}")
+        else:
+            self.panel_idle.hide()
+            self.panel_work.show()
+            
+            if len(p_name) > 12: p_name = p_name[:11] + ".."
+            if len(a_name) > 14: a_name = a_name[:13] + ".."
+            
+            self.fw_proj_name.setText(p_name)
+            self.fw_app_name.setText(a_name)
+            
+            # 【修复 float 报错】：强制转 int
+            def fmt(secs): 
+                s = int(float(secs))
+                return f"{s//3600:02d}:{s%3600//60:02d}" if s>=3600 else f"{s//60:02d}:{s%60:02d}"
+            
+            # 【视觉层级设计】：暗色代表历史总计，亮色/彩色代表当下
+            # 项目行：[暗灰:总计]  [纯白:今日]
+            self.fw_proj_times.setText(f"<span style='color:#666666;'>{fmt(p_total)}</span> &nbsp;&nbsp; <span style='color:#FFFFFF;'>{fmt(p_today)}</span>")
+            # 程序行：[暗灰:今日]  [翠绿:本次连续]
+            self.fw_app_times.setText(f"<span style='color:#666666;'>{fmt(a_today)}</span> &nbsp;&nbsp; <span style='color:#34C759; font-size: 13px;'>{fmt(session_sec)}</span>")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._is_dragging = True
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._is_dragging and self._drag_pos is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._is_dragging = False
 # ================= 数据可视化大屏 =================
 
 class DataDashboardWindow(QDialog):
@@ -569,6 +687,10 @@ class DashboardV2(QMainWindow):
         self.selected_uid_left = None
         self.selected_path_right = None
 
+        self._current_track_path = None
+        self._session_seconds = 0
+
+
         self.setup_ui()
         self.apply_modern_theme()
         
@@ -598,6 +720,13 @@ class DashboardV2(QMainWindow):
         self.btn_dashboard.setStyleSheet("background-color: #31A8FF; color: white; font-weight: bold; padding: 4px 12px; border-radius: 4px; margin-left: 15px;")
         self.btn_dashboard.clicked.connect(lambda: DataDashboardWindow(self).exec())
         header_layout.addWidget(self.btn_dashboard)
+        # 【新增】：呼出悬浮秒表
+        self.floating_widget = FloatingWidget(self) # 实例化悬浮窗，藏在后台
+        self.btn_float = QPushButton("📌 悬浮秒表")
+        self.btn_float.setStyleSheet("background-color: #4A4A4A; color: white; font-weight: bold; padding: 4px 12px; border-radius: 4px; margin-left: 10px;")
+        self.btn_float.clicked.connect(self.floating_widget.show)
+        header_layout.addWidget(self.btn_float)
+        
         title_label.setObjectName("titleLabel")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
@@ -628,10 +757,25 @@ class DashboardV2(QMainWindow):
         main_layout.addWidget(header)
 
         # --- 2. 极致紧凑的项目大盘 (Stats Bar) ---
-        self.lbl_stats_bar = QLabel("📊 当前关注项目: 未选中   |   今日累积: 0分0秒   |   历史总计: 0分0秒")
-        self.lbl_stats_bar.setObjectName("statsBar")
-        self.lbl_stats_bar.setFixedHeight(35)
-        main_layout.addWidget(self.lbl_stats_bar)
+        # --- 2. 极致紧凑的项目大盘 (Stats Bar - 左右弹簧对齐) ---
+        self.stats_frame = QFrame()
+        self.stats_frame.setObjectName("statsBar")
+        self.stats_frame.setFixedHeight(35)
+        stats_layout = QHBoxLayout(self.stats_frame)
+        stats_layout.setContentsMargins(15, 0, 15, 0)
+        
+        # 左侧：项目信息
+        self.lbl_stat_proj = QLabel("📊 项目: 未选中    |    累积: 0分0秒    |    今日: 0分0秒")
+        self.lbl_stat_proj.setStyleSheet("color: #D4D4D4; font-weight: bold; font-size: 13px;")
+        
+        # 右侧：程序信息
+        self.lbl_stat_app = QLabel("🎯 程序: 无    |    累积: 0分0秒    |    今日: 0分0秒    |    本次连续: 0分0秒")
+        self.lbl_stat_app.setStyleSheet("color: #68D391; font-weight: bold; font-size: 13px;")
+        
+        stats_layout.addWidget(self.lbl_stat_proj)
+        stats_layout.addStretch() # 核心弹簧：把两边狠狠推开！
+        stats_layout.addWidget(self.lbl_stat_app)
+        main_layout.addWidget(self.stats_frame)
 
         # --- 3. 主分栏 ---
         splitter = QSplitter(Qt.Horizontal)
@@ -862,11 +1006,8 @@ class DashboardV2(QMainWindow):
                         break
         conn.commit()
         conn.close()
-
     def _update_top_stats(self):
         conn = get_connection()
-        
-        # 1. 优先从日志里取“此时此刻”的绝对真实状态 (最近 3 秒内有记录说明正在跑)
         latest_log = conn.execute("SELECT app_name, file_path, timestamp FROM activity_log ORDER BY timestamp DESC LIMIT 1").fetchone()
         status_row = conn.execute("SELECT is_idle, idle_seconds, app_name, file_path FROM runtime_status WHERE id=1").fetchone()
         
@@ -878,54 +1019,78 @@ class DashboardV2(QMainWindow):
         if status_row:
             is_idle, idle_seconds, app_name, active_fpath = status_row
             
-        # 如果最新日志是几秒内产生的，强行覆盖为“正在追踪”该日志的内容，解决状态滞后
         if latest_log:
             l_app, l_path, l_time = latest_log
             try:
                 seconds_ago = (datetime.now() - datetime.fromisoformat(l_time)).total_seconds()
-                if seconds_ago < 5:  # 5 秒内有动静，绝对处于追踪状态
+                if seconds_ago < 5: 
                     is_idle = False
                     app_name = l_app
                     active_fpath = l_path
-            except:
-                pass
+            except: pass
 
+        # 1. 核心计算：全局“本次连续时长”
         if is_idle:
-            self.lbl_status.setText(f"💤 闲置中 ({int(idle_seconds)} 秒)")
-            self.lbl_status.setStyleSheet("color: #F6AD55; font-weight: bold; font-size: 13px;")
+            self._session_seconds = 0
+            self._current_track_path = None
         else:
-            d_path = active_fpath if active_fpath.startswith("[") else os.path.basename(active_fpath)
-            self.lbl_status.setText(f"⏱️ 正在追踪: {app_name} | {d_path}")
-            self.lbl_status.setStyleSheet("color: #68D391; font-weight: bold; font-size: 13px;")
-            if is_idle:
-                self.lbl_status.setText(f"💤 闲置中 ({int(idle_seconds)} 秒)")
-                self.lbl_status.setStyleSheet("color: #F6AD55; font-weight: bold; font-size: 13px;")
+            if self._current_track_path == active_fpath:
+                self._session_seconds += 3 # 跟着定时器步进
             else:
-                # 【修改点2】：顶部标题优化。如果是带有括号的虚拟路径，说明它本身就是个网页或软件标题，直接全展示，别截取！
-                if active_fpath.startswith("["):
-                    display_title = active_fpath
-                else:
-                    # 如果是一个真的路径（如 C:/xx/xx.aep），就只展示文件名
-                    display_title = os.path.basename(active_fpath)
-                    
-                self.lbl_status.setText(f"⏱️ 正在追踪: {app_name} | {display_title}")
-                self.lbl_status.setStyleSheet("color: #68D391; font-weight: bold; font-size: 13px;")
-        
-        target_pid = None
-        if self.selected_uid_left and self.selected_uid_left.startswith("P_"):
-            target_pid = int(self.selected_uid_left[2:])
-        elif active_fpath:
-            row = conn.execute("SELECT project_id FROM file_assignment WHERE file_path = ?", (active_fpath,)).fetchone()
-            if row: target_pid = row[0]
+                self._current_track_path = active_fpath
+                self._session_seconds = 3
+
+        # 2. 获取程序和项目的数据
+        d_path = "--"
+        p_name = "未分配"
+        p_today, p_total, a_today, a_total = 0, 0, 0, 0
+
+        if not is_idle and active_fpath:
+            d_path = active_fpath if active_fpath.startswith("[") else os.path.basename(active_fpath)
             
-        if target_pid:
-            p_name = conn.execute("SELECT project_name FROM projects WHERE id = ?", (target_pid,)).fetchone()[0]
-            stats = get_project_stats(target_pid, include_children=True)
-            self.lbl_stats_bar.setText(f"📊 当前关注项目:  {p_name}    |    今日累积:  {format_duration(stats['today'])}    |    历史总计:  {format_duration(stats['total'])}")
-        else:
-            self.lbl_stats_bar.setText("📊 当前关注项目:  未选中 / 无归属    |    今日累积:  0分0秒    |    历史总计:  0分0秒")
+            # 程序时长
+            row_app = conn.execute("""
+                SELECT COALESCE(SUM(duration), 0), 
+                       COALESCE(SUM(CASE WHEN DATE(SUBSTR(timestamp, 1, 10)) = ? THEN duration ELSE 0 END), 0)
+                FROM activity_log WHERE file_path = ?
+            """, (datetime.now().strftime('%Y-%m-%d'), active_fpath)).fetchone()
+            if row_app: a_total, a_today = row_app[0], row_app[1]
+
+            # 项目时长
+            target_pid = None
+            if self.selected_uid_left and self.selected_uid_left.startswith("P_"):
+                target_pid = int(self.selected_uid_left[2:])
+            else:
+                row_pid = conn.execute("SELECT project_id FROM file_assignment WHERE file_path = ?", (active_fpath,)).fetchone()
+                if row_pid: target_pid = row_pid[0]
+                
+            if target_pid:
+                p_name = conn.execute("SELECT project_name FROM projects WHERE id = ?", (target_pid,)).fetchone()[0]
+                stats = get_project_stats(target_pid, include_children=True)
+                p_today, p_total = stats['today'], stats['total']
+
         conn.close()
 
+        # 3. 渲染主界面顶部状态
+        if is_idle:
+            self.lbl_status.setText(f"💤 闲置中 ({int(idle_seconds)} 秒)")
+            self.lbl_status.setStyleSheet("color: #FF9F0A; font-weight: bold; font-size: 13px;")
+            self.lbl_stat_proj.setText("📊 项目: 休息中    |    累积: --    |    今日: --")
+            self.lbl_stat_app.setText("🎯 程序: 离开座位    |    累积: --    |    今日: --    |    本次连续: --")
+        else:
+            self.lbl_status.setText(f"🟢 正在追踪: {app_name} | {d_path}")
+            self.lbl_status.setStyleSheet("color: #34C759; font-weight: bold; font-size: 13px;")
+            
+            self.lbl_stat_proj.setText(f"📊 项目: {p_name}    |    累积: {format_duration(p_total)}    |    今日: {format_duration(p_today)}")
+            self.lbl_stat_app.setText(f"🎯 程序: {d_path}    |    累积: {format_duration(a_total)}    |    今日: {format_duration(a_today)}    |    本次连续: {format_duration(self._session_seconds)}")
+
+        # 4. 同步分发给悬浮窗 (如果悬浮窗开着)
+        if hasattr(self, 'floating_widget') and self.floating_widget.isVisible():
+            self.floating_widget.sync_data(
+                is_idle, idle_seconds, 
+                p_name, p_today, p_total,  # 传入了原生的 p_total 秒数
+                d_path, a_today, self._session_seconds
+            )
     def _update_timeline(self):
         # 提取今日所有秒级日志，聚合成连续的时间块
         conn = get_connection()
