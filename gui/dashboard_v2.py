@@ -221,16 +221,29 @@ class SettingsDialog(QDialog):
 # ================= 极简苹果风桌面置顶悬浮秒表 =================
 # ================= 极简苹果风桌面置顶悬浮秒表 =================
 # ================= macOS 底层窗口穿透工具 =================
+# ================= macOS 底层窗口穿透工具 =================
 def apply_macos_window_behavior(win_id):
     import sys
     if sys.platform == 'darwin':
         try:
             import objc
-            # 25 = CanJoinAllSpaces(1) | Stationary(16) | IgnoresExpose(8)
+            from ctypes import c_void_p
+            
+            # 1. 把 Qt 的 winId (一个整数) 转成 Objective-C 的指针对象
+            view_obj = objc.objc_object(c_void_p=int(win_id))
+            
+            # 2. 从 QNSView 中顺藤摸瓜获取它所属的真正的 NSWindow
+            ns_window = view_obj.window()
+            if ns_window is None:
+                print("macOS 穿透注入失败: 无法获取到 NSWindow")
+                return
+                
+            # 3. 25 = CanJoinAllSpaces(1) | Stationary(16) | IgnoresExpose(8)
             # 这三个组合拳能彻底免疫台前调度、多桌面切换和 F3 触发的隐藏
-            objc.objc_object(c_void_p=int(win_id)).setCollectionBehavior_(25)
+            ns_window.setCollectionBehavior_(25)
+            
         except Exception as e:
-            print(f"macOS 穿透注入失败 (请确保已安装 pyobjc): {e}")
+            print(f"macOS 穿透注入失败: {e}")
 
 # ================= 极简苹果风桌面置顶悬浮秒表 =================
 class FloatingWidget(QWidget):
