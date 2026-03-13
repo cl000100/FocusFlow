@@ -1973,9 +1973,11 @@ class DashboardV2(QMainWindow):
             all_pids = list(pid_to_path.keys())
             placeholders = ','.join('?' * len(all_pids))
             
+            # 【性能优化】：使用区间查询替代 DATE() 函数，使索引生效
+            # 导出功能需要查询所有历史数据，所以使用全时间范围
             query = f"""
                 SELECT 
-                    DATE(al.timestamp, 'localtime') as work_date,
+                    DATE(SUBSTR(timestamp, 1, 10)) as work_date,
                     fa.project_id,
                     al.app_name,
                     al.file_path,
@@ -1983,6 +1985,7 @@ class DashboardV2(QMainWindow):
                 FROM activity_log al
                 JOIN file_assignment fa ON al.file_path = fa.file_path
                 WHERE fa.project_id IN ({placeholders})
+                ORDER BY al.timestamp ASC
             """
             import pandas as pd
             df = pd.read_sql_query(query, conn, params=all_pids)
@@ -2060,10 +2063,12 @@ class DashboardV2(QMainWindow):
                     all_pids = list(pid_to_path.keys())
                     placeholders = ','.join('?' * len(all_pids))
                     
+                    # 【性能优化】：使用区间查询替代 DATE() 函数，使索引生效
                     query = f"""
-                        SELECT DATE(al.timestamp, 'localtime') as work_date, fa.project_id, al.app_name, al.file_path, al.duration
+                        SELECT DATE(SUBSTR(al.timestamp, 1, 10)) as work_date, fa.project_id, al.app_name, al.file_path, al.duration
                         FROM activity_log al JOIN file_assignment fa ON al.file_path = fa.file_path
                         WHERE fa.project_id IN ({placeholders})
+                        ORDER BY al.timestamp ASC
                     """
                     df = pd.read_sql_query(query, conn, params=all_pids)
                     
