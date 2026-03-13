@@ -34,6 +34,7 @@ from core.project_tree import (
     get_project_files, create_project, delete_project, 
     archive_project, restore_project, remove_file_assignment
 )
+from gui.data_management import DataManagementDialog
 
 import sys
 import os
@@ -84,12 +85,17 @@ class SystemTrayManager:
         
         self.tray_menu.addSeparator()
         
-        # 菜单项 3：重启程序
+        # 菜单项 3：数据管理
+        self.action_data_mgmt = QAction("数据管理", self.dashboard)
+        self.action_data_mgmt.triggered.connect(self.show_data_management)
+        self.tray_menu.addAction(self.action_data_mgmt)
+        
+        # 菜单项 4：重启程序
         self.action_restart = QAction("重启程序", self.dashboard)
         self.action_restart.triggered.connect(self.restart_app)
         self.tray_menu.addAction(self.action_restart)
         
-        # 菜单项 4：退出程序
+        # 菜单项 5：退出程序
         self.action_quit = QAction("退出程序", self.dashboard)
         self.action_quit.triggered.connect(self.quit_app)
         self.tray_menu.addAction(self.action_quit)
@@ -190,6 +196,11 @@ class SystemTrayManager:
             self.action_floating.setText("隐藏悬浮窗")
         else:
             self.action_floating.setText("显示悬浮窗")
+    
+    def show_data_management(self):
+        """显示数据管理对话框"""
+        dialog = DataManagementDialog(self.dashboard)
+        dialog.exec()
     
     def cleanup(self):
         """清理托盘"""
