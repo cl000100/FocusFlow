@@ -199,6 +199,401 @@ def get_main_table_stats():
     }
 
 
+# ================= 数据清理功能 =================
+
+def delete_data_by_range(start_date, end_date):
+    """
+    按时间范围删除数据（主表和归档表）
+    
+    Args:
+        start_date: 'YYYY-MM-DD HH:MM:SS'
+        end_date: 'YYYY-MM-DD HH:MM:SS'
+    
+    Returns:
+        dict: {'deleted_count': 删除的记录数， 'affected_tables': 受影响的表列表}
+    """
+    from datetime import datetime
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    start_dt = datetime.fromisoformat(start_date)
+    end_dt = datetime.fromisoformat(end_date)
+    
+    deleted_count = 0
+    affected_tables = []
+    
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # 1. 删除主表数据
+        cursor.execute("""
+            DELETE FROM activity_log
+            WHERE timestamp >= ? AND timestamp < ?
+        """, (start_date, end_date))
+        main_deleted = cursor.rowcount
+        deleted_count += main_deleted
+        if main_deleted > 0:
+            affected_tables.append("activity_log")
+        
+        # 2. 删除归档表数据
+        current = start_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        while current <= end_dt:
+            archive_table = get_archive_table_name(current.year, current.month)
+            if table_exists(archive_table):
+                cursor.execute(f"""
+                    DELETE FROM {archive_table}
+                    WHERE timestamp >= ? AND timestamp < ?
+                """, (start_date, end_date))
+                archive_deleted = cursor.rowcount
+                deleted_count += archive_deleted
+                if archive_deleted > 0:
+                    affected_tables.append(archive_table)
+            
+            # 下一个月
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1)
+            else:
+                current = current.replace(month=current.month + 1)
+        
+        conn.commit()
+        
+        print(f"✅ 成功删除 {deleted_count} 条记录")
+        return {'deleted_count': deleted_count, 'affected_tables': affected_tables}
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 删除失败：{e}")
+        raise
+    finally:
+        conn.close()
+
+
+def delete_data_by_app(app_name):
+    """
+    按应用名称删除数据
+    
+    Args:
+        app_name: 应用名称
+    
+    Returns:
+        dict: {'deleted_count': 删除的记录数}
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    deleted_count = 0
+    
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # 1. 删除主表数据
+        cursor.execute("""
+            DELETE FROM activity_log
+            WHERE app_name = ?
+        """, (app_name,))
+        deleted_count += cursor.rowcount
+        
+        # 2. 删除所有归档表数据
+        archives = get_archive_history()
+        for archive in archives:
+            table_name = archive['table_name']
+            cursor.execute(f"""
+                DELETE FROM {table_name}
+                WHERE app_name = ?
+            """, (app_name,))
+            deleted_count += cursor.rowcount
+        
+        conn.commit()
+        
+        print(f"✅ 成功删除应用 '{app_name}' 的 {deleted_count} 条记录")
+        return {'deleted_count': deleted_count}
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 删除失败：{e}")
+        raise
+    finally:
+        conn.close()
+
+
+def delete_data_by_file(file_path_pattern):
+    """
+    按文件路径（支持模糊匹配）删除数据
+    
+    Args:
+        file_path_pattern: 文件路径模式（支持 % 通配符）
+    
+    Returns:
+        dict: {'deleted_count': 删除的记录数}
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    deleted_count = 0
+    
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # 1. 删除主表数据
+        cursor.execute("""
+            DELETE FROM activity_log
+            WHERE file_path LIKE ?
+        """, (file_path_pattern,))
+        deleted_count += cursor.rowcount
+        
+        # 2. 删除所有归档表数据
+        archives = get_archive_history()
+        for archive in archives:
+            table_name = archive['table_name']
+            cursor.execute(f"""
+                DELETE FROM {table_name}
+                WHERE file_path LIKE ?
+            """, (file_path_pattern,))
+            deleted_count += cursor.rowcount
+        
+        conn.commit()
+        
+        print(f"✅ 成功删除匹配 '{file_path_pattern}' 的 {deleted_count} 条记录")
+        return {'deleted_count': deleted_count}
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 删除失败：{e}")
+        raise
+    finally:
+        conn.close()
+
+
+def delete_archive_table(table_name):
+    """
+    删除指定的归档表
+    
+    Args:
+        table_name: 归档表名（如 'activity_2026_02'）
+    
+    Returns:
+        dict: {'success': 是否成功， 'record_count': 删除的记录数}
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 检查表是否存在
+        if not table_exists(table_name):
+            return {'success': False, 'error': '表不存在'}
+        
+        # 统计记录数
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        record_count = cursor.fetchone()[0]
+        
+        # 删除表
+        cursor.execute(f"DROP TABLE {table_name}")
+        conn.commit()
+        
+        print(f"✅ 成功删除归档表 {table_name} ({record_count} 条记录)")
+        return {'success': True, 'record_count': record_count}
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 删除归档表失败：{e}")
+        return {'success': False, 'error': str(e)}
+    finally:
+        conn.close()
+
+
+def vacuum_database():
+    """
+    回收数据库空间（VACUUM 操作）
+    在大量删除数据后执行，可以减小数据库文件大小
+    
+    Returns:
+        bool: 是否成功
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("VACUUM")
+        conn.commit()
+        print("✅ 数据库空间回收完成")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 数据库空间回收失败：{e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_storage_stats():
+    """
+    获取存储空间统计
+    
+    Returns:
+        dict: {
+            'main_table_size': 主表大小 (字节),
+            'archive_tables_size': 归档表总大小 (字节),
+            'total_size': 总大小 (字节),
+            'archive_count': 归档表数量
+        }
+    """
+    import os
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # 获取数据库文件路径
+    db_path = get_db_path()
+    
+    # 获取数据库文件大小
+    try:
+        total_size = os.path.getsize(db_path)
+    except:
+        total_size = 0
+    
+    # 归档表数量
+    archives = get_archive_history()
+    archive_count = len(archives)
+    
+    # 估算各表大小（按记录数比例）
+    cursor.execute("SELECT COUNT(*) FROM activity_log")
+    main_count = cursor.fetchone()[0]
+    
+    total_count = main_count + sum(a['record_count'] for a in archives)
+    
+    if total_count > 0 and total_size > 0:
+        main_table_size = int((main_count / total_count) * total_size)
+        archive_tables_size = total_size - main_table_size
+    else:
+        main_table_size = 0
+        archive_tables_size = 0
+    
+    conn.close()
+    
+    return {
+        'main_table_size': main_table_size,
+        'archive_tables_size': archive_tables_size,
+        'total_size': total_size,
+        'archive_count': archive_count,
+        'db_path': db_path
+    }
+
+
+# ================= 数据备份/恢复功能 =================
+
+def backup_database(backup_path=None):
+    """
+    备份数据库
+    
+    Args:
+        backup_path: 备份文件路径，默认在数据库同目录下创建备份
+    
+    Returns:
+        dict: {'success': bool, 'backup_path': str, 'size': int}
+    """
+    import shutil
+    from datetime import datetime
+    
+    db_path = get_db_path()
+    
+    if backup_path is None:
+        # 默认备份到同目录
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_dir = os.path.dirname(db_path)
+        backup_path = os.path.join(backup_dir, f'focusflow_backup_{timestamp}.db')
+    
+    try:
+        # 确保目标目录存在
+        backup_dir = os.path.dirname(backup_path)
+        if backup_dir and not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        
+        # 复制文件
+        shutil.copy2(db_path, backup_path)
+        
+        # 获取文件大小
+        file_size = os.path.getsize(backup_path)
+        
+        print(f"✅ 数据库备份成功：{backup_path} ({file_size/1024/1024:.2f} MB)")
+        return {'success': True, 'backup_path': backup_path, 'size': file_size}
+        
+    except Exception as e:
+        print(f"❌ 数据库备份失败：{e}")
+        return {'success': False, 'error': str(e)}
+
+
+def restore_database(backup_path):
+    """
+    恢复数据库
+    
+    Args:
+        backup_path: 备份文件路径
+    
+    Returns:
+        dict: {'success': bool, 'message': str}
+    """
+    import shutil
+    
+    db_path = get_db_path()
+    
+    try:
+        # 检查备份文件是否存在
+        if not os.path.exists(backup_path):
+            return {'success': False, 'message': '备份文件不存在'}
+        
+        # 复制备份文件到数据库位置
+        shutil.copy2(backup_path, db_path)
+        
+        print(f"✅ 数据库恢复成功：{db_path}")
+        return {'success': True, 'message': '数据库已成功恢复'}
+        
+    except Exception as e:
+        print(f"❌ 数据库恢复失败：{e}")
+        return {'success': False, 'message': str(e)}
+
+
+def list_backups(backup_dir=None):
+    """
+    列出所有备份文件
+    
+    Args:
+        backup_dir: 备份目录，默认数据库所在目录
+    
+    Returns:
+        list: [{'path': str, 'size': int, 'date': str}, ...]
+    """
+    if backup_dir is None:
+        db_path = get_db_path()
+        backup_dir = os.path.dirname(db_path)
+    
+    backups = []
+    
+    try:
+        for filename in os.listdir(backup_dir):
+            if filename.startswith('focusflow_backup_') and filename.endswith('.db'):
+                filepath = os.path.join(backup_dir, filename)
+                stat = os.stat(filepath)
+                
+                # 从文件名解析日期
+                date_str = filename.replace('focusflow_backup_', '').replace('.db', '')
+                
+                backups.append({
+                    'path': filepath,
+                    'size': stat.st_size,
+                    'date': date_str,
+                    'filename': filename
+                })
+        
+        # 按日期排序（最新的在前）
+        backups.sort(key=lambda x: x['date'], reverse=True)
+        
+    except Exception as e:
+        print(f"❌ 列出备份失败：{e}")
+    
+    return backups
+
+
 def set_config(key, value):
     """写入配置项"""
     conn = get_connection()
