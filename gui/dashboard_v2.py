@@ -2530,6 +2530,11 @@ class DashboardV2(QMainWindow):
         if sys.platform == 'darwin':
             self._setup_macos_dock_behavior()
         
+        # 初始化定时器（每 3 秒刷新一次数据）
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_data)
+        self.timer.start(3000)
+        
         # 标记是否正在退出
         self._is_quitting = False
         
@@ -2572,10 +2577,6 @@ class DashboardV2(QMainWindow):
                 self._macos_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         except Exception as e:
             pass  # 静默失败，不影响主功能
-        
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_data)
-        self.timer.start(3000)
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -2710,7 +2711,8 @@ class DashboardV2(QMainWindow):
         self.spin_filter_threshold = QSpinBox()
         self.spin_filter_threshold.setRange(0, 3600)  # 0-3600 秒
         self.spin_filter_threshold.setValue(60)  # 默认 60 秒
-        self.spin_filter_threshold.setMaximumWidth(60)
+        self.spin_filter_threshold.setMaximumWidth(80)
+        self.spin_filter_threshold.setMinimumWidth(60)
         self.spin_filter_threshold.valueChanged.connect(self.on_filter_threshold_changed)
         filter_layout.addWidget(self.spin_filter_threshold)
         filter_layout.addWidget(QLabel("秒"))

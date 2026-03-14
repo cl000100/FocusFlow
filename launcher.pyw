@@ -10,8 +10,11 @@ import subprocess
 import sys
 import os
 import time
+import traceback
 
 def main():
+    # 设置错误日志文件
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "launcher_error.log")
     # 获取项目根目录
     if getattr(sys, 'frozen', False):
         # 如果是打包后的 exe
@@ -57,24 +60,32 @@ def main():
         print("✅ 后台服务已在运行")
     
     # 启动 GUI
-    from gui.dashboard_v2 import DashboardV2
-    from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import Qt
-    
-    # 启用高 DPI 支持
-    QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
-    
-    app = QApplication(sys.argv)
-    app.setApplicationName("FocusFlow")
-    
-    # 创建主窗口
-    window = DashboardV2()
-    window.show()
-    
-    # 运行事件循环
-    sys.exit(app.exec())
+    try:
+        from gui.dashboard_v2 import DashboardV2
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import Qt
+        
+        # 启用高 DPI 支持
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
+        
+        app = QApplication(sys.argv)
+        app.setApplicationName("FocusFlow")
+        
+        # 创建主窗口
+        window = DashboardV2()
+        window.show()
+        
+        # 运行事件循环
+        sys.exit(app.exec())
+    except Exception as e:
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write(f"错误：{str(e)}\n\n")
+            f.write(traceback.format_exc())
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, f"启动失败：{str(e)}\n\n详细错误已写入：{log_file}", "FocusFlow 错误", 16)
+        raise
 
 
 if __name__ == "__main__":
