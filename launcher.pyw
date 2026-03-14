@@ -67,8 +67,8 @@ def main():
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
             cmdline = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
-            # 检查是否是 service_daemon.py 进程，且不是当前进程
-            if 'service_daemon.py' in cmdline and proc.info['pid'] != os.getpid():
+            # 检查是否是 service_daemon 进程，且不是当前进程
+            if ('service_daemon.py' in cmdline or 'service_daemon.exe' in cmdline) and proc.info['pid'] != os.getpid():
                 service_running = True
                 print(f"ℹ️  后台服务已在运行 (PID: {proc.info['pid']})")
                 break
@@ -78,11 +78,21 @@ def main():
     if not service_running:
         print("🚀 启动后台服务...")
         # 启动后台服务（无窗口）
-        subprocess.Popen(
-            [python_exe, "service_daemon.py"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            cwd=PROJECT_ROOT
-        )
+        if getattr(sys, 'frozen', False):
+            # 打包后的环境，启动 service_daemon.exe
+            service_exe = os.path.join(PROJECT_ROOT, "service_daemon.exe")
+            subprocess.Popen(
+                [service_exe],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                cwd=PROJECT_ROOT
+            )
+        else:
+            # 开发环境，启动 service_daemon.py
+            subprocess.Popen(
+                [python_exe, "service_daemon.py"],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                cwd=PROJECT_ROOT
+            )
         # 等待服务启动
         time.sleep(1)
         print("✅ 后台服务已启动")

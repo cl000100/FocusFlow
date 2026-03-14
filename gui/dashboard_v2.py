@@ -423,11 +423,15 @@ class SystemTrayManager:
         self.dashboard.close()
         
         # 重启进程
-        python = sys.executable
-        script = os.path.abspath(__file__)
-        
-        # 启动新进程
-        subprocess.Popen([python, script])
+        if getattr(sys, 'frozen', False):
+            # 打包后的环境，重启主可执行文件
+            main_exe = sys.executable
+            subprocess.Popen([main_exe])
+        else:
+            # 开发环境，重启脚本
+            python = sys.executable
+            script = os.path.abspath(__file__)
+            subprocess.Popen([python, script])
         
         # 退出当前进程
         sys.exit(0)

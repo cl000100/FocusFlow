@@ -98,7 +98,19 @@ def init_db():
     # ================= 性能优化：启用 WAL 模式 =================
     # WAL (Write-Ahead Logging) 允许读写并发，提升性能
     # 必须在其他操作之前执行
-    cursor.execute('''PRAGMA journal_mode = WAL''')
+    # 注意：在某些 Windows 环境下可能会失败，需要错误处理
+    try:
+        cursor.execute('''PRAGMA journal_mode = WAL''')
+        print("[DEBUG] WAL mode enabled successfully")
+    except sqlite3.OperationalError as e:
+        print(f"[WARNING] Failed to enable WAL mode: {e}")
+        print("[WARNING] Continuing without WAL mode...")
+        # 尝试使用 DELETE 模式（默认模式）
+        try:
+            cursor.execute('''PRAGMA journal_mode = DELETE''')
+            print("[DEBUG] Using DELETE journal mode instead")
+        except:
+            pass
     
     # 1. 基础活动日志表
     cursor.execute('''CREATE TABLE IF NOT EXISTS activity_log 
