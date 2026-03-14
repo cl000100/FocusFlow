@@ -36,11 +36,11 @@ $RECYCLE.BIN/
 *.log
 logs/
 
-# Database (optional - include if you want to track schema only)
+# Database (ignore all database files)
 data/*.db
-data/tracker.db-shm
-data/tracker.db-wal
-data/
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite3
 # Build artifacts
 build/
 dist/
