@@ -423,11 +423,15 @@ class SystemTrayManager:
         self.dashboard.close()
         
         # 重启进程
-        python = sys.executable
-        script = os.path.abspath(__file__)
-        
-        # 启动新进程
-        subprocess.Popen([python, script])
+        if getattr(sys, 'frozen', False):
+            # 打包后的环境，重启主可执行文件
+            main_exe = sys.executable
+            subprocess.Popen([main_exe])
+        else:
+            # 开发环境，重启脚本
+            python = sys.executable
+            script = os.path.abspath(__file__)
+            subprocess.Popen([python, script])
         
         # 退出当前进程
         sys.exit(0)
@@ -548,44 +552,6 @@ class ProjectRulesDialog(QDialog):
             conn.close()
             self.load_data()
 
-class DatabaseManagerDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("🗄️ 数据库管理")
-        self.setMinimumWidth(450)
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("当前正在使用的数据库："))
-        self.lbl_current_db = QLabel(get_db_path())
-        self.lbl_current_db.setStyleSheet("color: #9CDCFE; font-weight: bold; word-break: break-all;")
-        layout.addWidget(self.lbl_current_db)
-
-        btn_layout = QHBoxLayout()
-        btn_new = QPushButton("➕ 新建空数据库")
-        btn_new.clicked.connect(self.create_new_db)
-        btn_load = QPushButton("📂 载入已有数据库")
-        btn_load.clicked.connect(self.load_existing_db)
-
-        btn_layout.addWidget(btn_new)
-        btn_layout.addWidget(btn_load)
-        layout.addLayout(btn_layout)
-
-    def create_new_db(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "新建数据库", "", "SQLite Database (*.db)")
-        if file_path:
-            if not file_path.endswith('.db'): file_path += '.db'
-            set_db_path(file_path)
-            init_db()  # 初始化新库的表结构
-            QMessageBox.information(self, "成功", "已创建并切换到新数据库！\n后台进程将自动跟随切换。")
-            self.accept()
-
-    def load_existing_db(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "载入数据库", "", "SQLite Database (*.db)")
-        if file_path:
-            set_db_path(file_path)
-            QMessageBox.information(self, "成功", "已切换到目标数据库！\n后台进程将自动跟随切换。")
-            self.accept()
-
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -635,6 +601,32 @@ class SettingsDialog(QDialog):
         row = conn.execute("SELECT value FROM system_config WHERE key='idle_threshold'").fetchone()
         if row: self.spin_idle.setValue(int(row[0]))
         layout.addWidget(group_gather)
+        
+        # ========== 数据库设置 ==========
+        group_db = QGroupBox("数据库设置")
+        db_layout = QVBoxLayout(group_db)
+        
+        # 当前数据库路径显示
+        db_path_layout = QHBoxLayout()
+        self.lbl_db_path = QLabel()
+        current_db_path = get_db_path()
+        self.lbl_db_path.setText(f"当前数据库：{current_db_path}")
+        self.lbl_db_path.setWordWrap(True)
+        self.lbl_db_path.setStyleSheet("color: #888888; font-size: 11px; padding: 5px;")
+        db_path_layout.addWidget(self.lbl_db_path, 1)
+        
+        btn_change_db = QPushButton("更改位置")
+        btn_change_db.clicked.connect(self.change_database_path)
+        db_path_layout.addWidget(btn_change_db)
+        
+        db_layout.addLayout(db_path_layout)
+        
+        # 打开数据库目录按钮
+        btn_open_db_dir = QPushButton("📁 打开数据库所在目录")
+        btn_open_db_dir.clicked.connect(self.open_database_directory)
+        db_layout.addWidget(btn_open_db_dir)
+        
+        layout.addWidget(group_db)
         
         # ========== 危险操作 ==========
         group_danger = QGroupBox("危险操作")
@@ -690,6 +682,64 @@ class SettingsDialog(QDialog):
             conn.commit()
             conn.close()
             self.accept()
+    
+    def change_database_path(self):
+        """更改数据库路径"""
+        # 打开文件选择对话框
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择数据库文件位置",
+            "",
+            "SQLite Database (*.db);;All Files (*)"
+        )
+        
+        if file_path:
+            # 确保目录存在
+            db_dir = os.path.dirname(file_path)
+            os.makedirs(db_dir, exist_ok=True)
+            
+            try:
+                # 备份当前数据库
+                current_db = get_db_path()
+                if os.path.exists(current_db):
+                    import shutil
+                    shutil.copy2(current_db, file_path)
+                    QMessageBox.information(
+                        self, 
+                        "成功", 
+                        f"数据库已迁移到新位置：\n{file_path}\n\n原数据库保留在：\n{current_db}"
+                    )
+                else:
+                    QMessageBox.information(
+                        self, 
+                        "成功", 
+                        f"新数据库将在首次运行时创建在：\n{file_path}"
+                    )
+                
+                # 保存新路径
+                set_db_path(file_path)
+                
+                # 更新显示
+                self.lbl_db_path.setText(f"当前数据库：{file_path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"迁移失败：{str(e)}")
+    
+    def open_database_directory(self):
+        """打开数据库所在目录"""
+        import subprocess
+        db_path = get_db_path()
+        db_dir = os.path.dirname(db_path)
+        
+        try:
+            if sys.platform == 'win32':
+                subprocess.Popen(f'explorer "{db_dir}"')
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', db_dir])
+            else:
+                subprocess.Popen(['xdg-open', db_dir])
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法打开目录：{str(e)}")
 
 
 
@@ -2616,8 +2666,6 @@ class DashboardV2(QMainWindow):
         
         self.btn_blacklist = QPushButton("黑名单")
         self.btn_blacklist.clicked.connect(self.open_blacklist)
-        self.btn_db = QPushButton("数据库")
-        self.btn_db.clicked.connect(self.open_database_manager)
         
         # 【新增】：批量导出结算大单按钮
         self.btn_export_all = QPushButton("导出全盘月度总结算单")
@@ -2628,7 +2676,6 @@ class DashboardV2(QMainWindow):
         self.btn_settings.clicked.connect(self.open_settings)
         
         header_layout.addWidget(self.btn_export_all)
-        header_layout.addWidget(self.btn_db)
         header_layout.addWidget(self.btn_blacklist)
         header_layout.addWidget(self.btn_settings)
         main_layout.addWidget(header)
@@ -2787,14 +2834,6 @@ class DashboardV2(QMainWindow):
 # --- 5. 【新增】底部时间轴 ---
         self.timeline = TimelineWidget()
         main_layout.addWidget(self.timeline)
-    def open_database_manager(self):
-        if DatabaseManagerDialog(self).exec():
-            # 切换数据库后，强制清空旧的展开状态，重新加载
-            self.expanded_uids.clear()
-            self.selected_uid_left = None
-            self.selected_path_right = None
-            self.refresh_data()
-
     def open_settings(self):
         if SettingsDialog(self).exec(): self.refresh_data()
 

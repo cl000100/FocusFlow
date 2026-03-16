@@ -59,3 +59,15 @@ htmlcov/
 *.temp
 data/tracker.db
 data/tracker.db
+
+# Backup files
+data_backup_*/
+data/backups/
+
+# Debug files
+*_debug.*
+*_Debug.*
+
+# Release directory
+Release/
+data/

@@ -1,9 +1,18 @@
 import sqlite3
 import os
+import sys
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tracker.db")
+def get_base_dir():
+    """获取基础目录（支持打包后）"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.path.dirname(os.path.dirname(__file__))
+
+# 不再硬编码 DB_PATH，改用动态获取
+# DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tracker.db")
 
 
 class ProjectNode:
@@ -129,7 +138,8 @@ class ProjectTree:
 
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    from core.database import get_db_path
+    return sqlite3.connect(get_db_path())
 
 
 def init_project_tree():

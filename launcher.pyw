@@ -24,6 +24,36 @@ def main():
     
     os.chdir(PROJECT_ROOT)
     
+    # 首次启动检查：确保用户数据目录存在
+    from core.database import ensure_user_data_dir, get_db_path, get_user_data_dir
+    import sqlite3
+    
+    try:
+        # 确保用户数据目录存在
+        user_data_dir = ensure_user_data_dir()
+        
+        # 检查是否是首次启动（数据库不存在）
+        db_path = get_db_path()
+        is_first_run = not os.path.exists(db_path)
+        
+        if is_first_run:
+            # 首次启动，显示欢迎消息
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0, 
+                f"欢迎使用 FocusFlow！\n\n"
+                f"这是首次启动，程序将在以下位置创建数据库：\n"
+                f"{db_path}\n\n"
+                f"你可以在设置中随时更改数据库位置。",
+                "FocusFlow 欢迎", 
+                64
+            )
+    except Exception as e:
+        # 如果目录创建失败，记录错误但继续（会降级到程序目录）
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write(f"用户目录创建警告：{str(e)}\n")
+            f.write("将使用程序目录存储数据\n\n")
+    
     # 检查虚拟环境
     venv_python = os.path.join(PROJECT_ROOT, "venv", "Scripts", "python.exe")
     if os.path.exists(venv_python):
@@ -37,8 +67,8 @@ def main():
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
             cmdline = ' '.join(proc.info['cmdline']) if proc.info['cmdline'] else ''
-            # 检查是否是 service_daemon.py 进程，且不是当前进程
-            if 'service_daemon.py' in cmdline and proc.info['pid'] != os.getpid():
+            # 检查是否是 service_daemon 进程，且不是当前进程
+            if ('service_daemon.py' in cmdline or 'service_daemon.exe' in cmdline) and proc.info['pid'] != os.getpid():
                 service_running = True
                 print(f"ℹ️  后台服务已在运行 (PID: {proc.info['pid']})")
                 break
@@ -48,11 +78,21 @@ def main():
     if not service_running:
         print("🚀 启动后台服务...")
         # 启动后台服务（无窗口）
-        subprocess.Popen(
-            [python_exe, "service_daemon.py"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            cwd=PROJECT_ROOT
-        )
+        if getattr(sys, 'frozen', False):
+            # 打包后的环境，启动 service_daemon.exe
+            service_exe = os.path.join(PROJECT_ROOT, "service_daemon.exe")
+            subprocess.Popen(
+                [service_exe],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                cwd=PROJECT_ROOT
+            )
+        else:
+            # 开发环境，启动 service_daemon.py
+            subprocess.Popen(
+                [python_exe, "service_daemon.py"],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                cwd=PROJECT_ROOT
+            )
         # 等待服务启动
         time.sleep(1)
         print("✅ 后台服务已启动")

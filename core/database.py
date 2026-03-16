@@ -1,36 +1,116 @@
 import sqlite3
 import os
+import sys
+
+def get_base_dir():
+    """获取基础目录（支持打包后）"""
+    if getattr(sys, 'frozen', False):
+        # 打包后的 exe 运行目录
+        return os.path.dirname(sys.executable)
+    else:
+        # 开发环境的源码目录
+        return os.path.dirname(os.path.dirname(__file__))
+
+def get_user_data_dir():
+    """获取用户数据目录（跨平台）"""
+    if sys.platform == 'win32':
+        # Windows: C:\Users\用户名\AppData\Roaming\FocusFlow
+        appdata = os.getenv('APPDATA')
+        if appdata:
+            return os.path.join(appdata, 'FocusFlow')
+    elif sys.platform == 'darwin':
+        # macOS: ~/Library/Application Support/FocusFlow
+        home = os.path.expanduser('~')
+        return os.path.join(home, 'Library', 'Application Support', 'FocusFlow')
+    else:
+        # Linux: ~/.local/share/FocusFlow
+        home = os.path.expanduser('~')
+        return os.path.join(home, '.local', 'share', 'FocusFlow')
+    
+    # 降级方案：使用程序目录
+    return get_base_dir()
 
 def get_db_path():
-    # 读取配置文件以支持动态热切换数据库
-    base_dir = os.path.dirname(os.path.dirname(__file__))
+    """获取数据库路径
+    
+    优先级：
+    1. 用户自定义路径（配置文件）
+    2. 用户数据目录（推荐）
+    3. 程序目录（兼容旧版）
+    """
+    base_dir = get_base_dir()
+    
+    # 1. 检查用户自定义路径配置
     config_file = os.path.join(base_dir, "data", "active_db.txt")
     if os.path.exists(config_file):
         with open(config_file, 'r', encoding='utf-8') as f:
             custom_path = f.read().strip()
             if custom_path and os.path.exists(os.path.dirname(custom_path)):
                 return custom_path
-    return os.path.join(base_dir, "data", "tracker.db")
+    
+    # 2. 优先使用用户数据目录
+    user_data_dir = get_user_data_dir()
+    user_db_path = os.path.join(user_data_dir, "data", "tracker.db")
+    
+    # 如果用户数据目录的数据库存在，直接使用
+    if os.path.exists(user_db_path):
+        return user_db_path
+    
+    # 3. 降级到程序目录（兼容旧版）
+    local_db_path = os.path.join(base_dir, "data", "tracker.db")
+    if os.path.exists(local_db_path):
+        return local_db_path
+    
+    # 4. 默认使用用户数据目录（首次启动）
+    return user_db_path
 
 def set_db_path(new_path):
-    # 保存新的数据库路径
-    base_dir = os.path.dirname(os.path.dirname(__file__))
+    """保存新的数据库路径到配置文件"""
+    base_dir = get_base_dir()
     config_file = os.path.join(base_dir, "data", "active_db.txt")
+    
+    # 确保目录存在
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    
     with open(config_file, 'w', encoding='utf-8') as f:
         f.write(new_path)
+
+
+def ensure_user_data_dir():
+    """确保用户数据目录存在"""
+    user_data_dir = get_user_data_dir()
+    os.makedirs(os.path.join(user_data_dir, "data"), exist_ok=True)
+    return os.path.join(user_data_dir, "data")
 
 def get_connection():
     return sqlite3.connect(get_db_path())
 
 
 def init_db():
+    # 确保数据库目录存在
+    db_path = get_db_path()
+    db_dir = os.path.dirname(db_path)
+    os.makedirs(db_dir, exist_ok=True)
+    
     conn = get_connection()
     cursor = conn.cursor()
     
     # ================= 性能优化：启用 WAL 模式 =================
     # WAL (Write-Ahead Logging) 允许读写并发，提升性能
     # 必须在其他操作之前执行
-    cursor.execute('''PRAGMA journal_mode = WAL''')
+    # 注意：在某些 Windows 环境下可能会失败，需要错误处理
+    try:
+        cursor.execute('''PRAGMA journal_mode = WAL''')
+        print("[DEBUG] WAL mode enabled successfully")
+    except sqlite3.OperationalError as e:
+        print(f"[WARNING] Failed to enable WAL mode: {e}")
+        print("[WARNING] Continuing without WAL mode...")
+        # 尝试使用 DELETE 模式（默认模式）
+        try:
+            cursor.execute('''PRAGMA journal_mode = DELETE''')
+            print("[DEBUG] Using DELETE journal mode instead")
+        except:
+            pass
     
     # 1. 基础活动日志表
     cursor.execute('''CREATE TABLE IF NOT EXISTS activity_log 

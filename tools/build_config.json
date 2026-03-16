@@ -1,0 +1,8 @@
+{
+  "build_mode": "full",
+  "console_mode": false,
+  "backup_data": true,
+  "test_after_build": true,
+  "generate_log": true,
+  "clean_temp": true
+}
