@@ -23,11 +23,9 @@ if platform.system() == "Windows":
         input("按 Enter 键退出...")
         sys.exit(1)
 
-# 添加调试信息
 print(f"[DEBUG] Python version: {sys.version}")
 print(f"[DEBUG] Platform: {platform.system()}")
 print(f"[DEBUG] Current directory: {os.getcwd()}")
-print(f"[DEBUG] sys.path: {sys.path}")
 
 try:
     from core.database import init_db, get_connection
@@ -45,21 +43,92 @@ except Exception as e:
     print(traceback.format_exc())
     sys.exit(1)
 
+# 常量
+CHECKPOINT_INTERVAL = 60  # 每 60 秒写一次 checkpoint
+
+
+def write_activity_log(app_name, file_path, duration, timestamp=None):
+    """写入一条 activity_log 记录"""
+    if duration <= 0:
+        return
+    if timestamp is None:
+        timestamp = datetime.datetime.now().isoformat()
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO activity_log (timestamp, app_name, file_path, duration) VALUES (?, ?, ?, ?)",
+        (timestamp, app_name, file_path, round(duration, 2))
+    )
+    conn.commit()
+    conn.close()
+    print(f"✅ 写入 -> {app_name} | {file_path} | {round(duration, 2)}秒")
+
+
+def load_session_state():
+    """从 runtime_status 恢复上次的 session 状态"""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT session_start, last_checkpoint, accumulated_since_checkpoint,
+               last_app_name, last_file_path, updated_at
+        FROM runtime_status WHERE id=1
+    """).fetchone()
+    conn.close()
+
+    if row and row[0]:  # 有 session_start
+        session_start, last_checkpoint, accumulated, last_app, last_file, updated_at = row
+        # 检查 session 是否过期（超过 5 分钟没更新说明服务重启了）
+        if updated_at:
+            try:
+                last_update = datetime.datetime.fromisoformat(updated_at)
+                elapsed = (datetime.datetime.now() - last_update).total_seconds()
+                if elapsed < 300:  # 5 分钟内，认为是有效 session
+                    print(f"[SESSION] 恢复: app={last_app}, file={last_file}, 累计={accumulated}秒")
+                    return {
+                        'session_start': session_start,
+                        'last_checkpoint': last_checkpoint,
+                        'accumulated': accumulated or 0,
+                        'last_app': last_app,
+                        'last_file': last_file
+                    }
+            except Exception as e:
+                print(f"[WARN] 恢复 session 失败: {e}")
+    return None
+
+
+def save_session_state(app_name, file_path, session_start, last_checkpoint, accumulated, is_idle, idle_time):
+    """保存当前 session 状态到 runtime_status"""
+    now = datetime.datetime.now().isoformat()
+    conn = get_connection()
+    conn.execute("""
+        INSERT OR REPLACE INTO runtime_status
+        (id, updated_at, is_idle, idle_seconds, app_name, file_path,
+         session_start, last_checkpoint, accumulated_since_checkpoint, last_app_name, last_file_path)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (now, 1 if is_idle else 0, float(idle_time or 0), app_name, file_path,
+          session_start, last_checkpoint, accumulated, app_name, file_path))
+    conn.commit()
+    conn.close()
+
+
+def is_valid_app(app_name, file_path):
+    """判断是否有效活动（不是 None，空字符串，或 N/A）"""
+    return bool(app_name and app_name != "N/A" and file_path != "N/A")
+
+
 def run_daemon():
-    print("🚀 FocusFlow 后台采集引擎已启动 (V2 增强版)...")
+    print("🚀 FocusFlow 后台采集引擎已启动 (V3 优化版 - 状态变化记录)...")
+
     try:
-        init_db()  # 初始化数据库和表
+        init_db()
         print("[DEBUG] Database initialized successfully")
     except Exception as e:
         print(f"[ERROR] Failed to initialize database: {e}")
-        print(traceback.format_exc())
         sys.exit(1)
-    
+
     interval = int(os.getenv("FOCUSFLOW_INTERVAL_SECONDS", "1"))
     debug_idle = os.getenv("FOCUSFLOW_DEBUG", "0") == "1"
     idle_source = os.getenv("FOCUSFLOW_IDLE_SOURCE", "combined").lower()
     idle_mode = os.getenv("FOCUSFLOW_IDLE_MODE", "strict").lower()
-    
+
     os_name = platform.system()
     idle_state = None
     if os_name == "Darwin":
@@ -68,22 +137,35 @@ def run_daemon():
             idle_state = Quartz.kCGEventSourceStateHIDSystemState
         else:
             idle_state = getattr(Quartz, "kCGEventSourceStateCombinedSessionState", Quartz.kCGEventSourceStateHIDSystemState)
-            
-    last_app = "--"
-    last_file = "--"
+
+    # 恢复上次的 session 状态
+    session = load_session_state()
+    if session:
+        session_start = session['session_start']
+        last_checkpoint = session['last_checkpoint']
+        accumulated = session['accumulated']
+        last_app = session['last_app']
+        last_file = session['last_file']
+    else:
+        now = datetime.datetime.now()
+        session_start = now.isoformat()
+        last_checkpoint = now.isoformat()
+        accumulated = 0
+        last_app = None
+        last_file = None
+
+    checkpoint_interval = CHECKPOINT_INTERVAL
 
     try:
         while True:
-            # 1. 每次循环等待指定时间（默认 1 秒）
             time.sleep(interval)
-            
-            # 2. 实时从数据库读取你在界面上设置的“空闲阈值”
+
+            # 1. 读取空闲阈值
             with get_connection() as conn:
                 row = conn.execute("SELECT value FROM system_config WHERE key='idle_threshold'").fetchone()
                 idle_threshold = int(row[0]) if row else 30
-            
-            # 3. 检测系统是否闲置
-            # 3. 检测系统是否闲置
+
+            # 2. 检测系统空闲
             idle_time = 0
             if os_name == "Darwin":
                 import Quartz
@@ -101,79 +183,102 @@ def run_daemon():
                 last_input = win32api.GetLastInputInfo()
                 current_time = win32api.GetTickCount()
                 idle_time = (current_time - last_input) / 1000.0
-            if debug_idle:
-                print(f"🕒 空闲秒数: {idle_time} (阈值: {idle_threshold})")
-            
-            # 判定当前是否闲置
+
             is_idle = idle_time is None or idle_time >= idle_threshold
 
-            # 4. 获取当前前台活跃的窗口和软件
+            # 3. 获取当前活动窗口
             try:
                 app_name, file_path = get_active_app_info()
-                print(f"[DEBUG] get_active_app_info returned: {app_name} | {file_path}")
             except Exception as e:
-                print(f"[ERROR] Failed to get active app info: {e}")
-                print(traceback.format_exc())
+                print(f"[ERROR] get_active_app_info: {e}")
                 app_name, file_path = "Unknown", "N/A"
-            
-            # V2 核心修改：移除硬编码！现在所有不是 "N/A" 的路径，只要人没闲置，统统记录！
-            can_track = (not is_idle) and (file_path != "N/A")
-            print(f"[DEBUG] can_track: {can_track} (is_idle: {is_idle}, file_path: {file_path})")
 
-            if can_track:
-                last_app, last_file = app_name, file_path
-                try:
-                    conn = get_connection()
-                    # 将这一秒的时长写入总账本
-                    conn.execute(
-                        "INSERT INTO activity_log (timestamp, app_name, file_path, duration) VALUES (?, ?, ?, ?)",
-                        (datetime.datetime.now().isoformat(), app_name, file_path, interval)
-                    )
-                    conn.commit()  # 【关键】强制立即写入硬盘！
-                    conn.close()
-                    
-                    # 强制在终端打印日志，让我们看到它到底抓到了什么
-                    print(f"✅ 记入数据库 -> 应用: {app_name} | 窗口: {file_path}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to write to database: {e}")
-                    print(traceback.format_exc())
+            current_valid = is_valid_app(app_name, file_path)
+            last_valid = is_valid_app(last_app, last_file) if last_app else False
+
+            now = datetime.datetime.now()
+
+            if current_valid and not is_idle:
+                # ===== 当前是有效活动 =====
+                app_changed = (app_name != last_app)
+                file_changed = (file_path != last_file)
+
+                if app_changed and last_valid:
+                    # app 变化了，写入上一条的累计
+                    duration = accumulated
+                    write_activity_log(last_app, last_file, duration, session_start)
+                    session_start = now.isoformat()
+                    accumulated = 0
+                    last_checkpoint = now.isoformat()
+                elif file_changed and last_valid and accumulated >= 30:
+                    # 同一 app 内 file_path 变化，且累计 >= 30秒，拆分记录
+                    duration = accumulated
+                    write_activity_log(last_app, last_file, duration, session_start)
+                    session_start = now.isoformat()
+                    accumulated = 0
+                    last_checkpoint = now.isoformat()
+                elif not last_valid:
+                    # 之前没有有效 session，初始化
+                    session_start = now.isoformat()
+                    last_checkpoint = now.isoformat()
+
+                # 累计时间
+                accumulated += interval
+                last_app = app_name
+                last_file = file_path
+
+                # 检查 checkpoint
+                if last_checkpoint:
+                    try:
+                        last_ck = datetime.datetime.fromisoformat(last_checkpoint)
+                        elapsed = (now - last_ck).total_seconds()
+                        if elapsed >= checkpoint_interval and accumulated > 0:
+                            write_activity_log(app_name, file_path, accumulated, last_checkpoint)
+                            last_checkpoint = now.isoformat()
+                            accumulated = 0
+                            print(f"📍 Checkpoint ({checkpoint_interval}秒周期)")
+                    except Exception as e:
+                        print(f"[WARN] checkpoint 检查失败: {e}")
+
             else:
-                if debug_idle and is_idle:
-                    print("💤 系统闲置，暂停记录...")
+                # ===== 当前是闲置或无效窗口 =====
+                if last_valid and accumulated > 0:
+                    # 写入最后的累计记录
+                    write_activity_log(last_app, last_file, accumulated, session_start)
+                    accumulated = 0
+                    last_app = None
+                    last_file = None
+                    session_start = None
+                    last_checkpoint = None
 
+            # 4. 更新 runtime_status
+            save_session_state(
+                app_name or "",
+                file_path or "",
+                session_start or (now.isoformat() if current_valid else ""),
+                last_checkpoint or (now.isoformat() if last_valid else ""),
+                accumulated,
+                is_idle,
+                idle_time
+            )
+
+            # 5. 调试输出
             if debug_idle:
-                if is_idle:
-                    state = "闲置中"
-                elif file_path == "N/A":
-                    state = "不计时(未识别窗口)"
-                else:
-                    state = "记时中"
-                print(f"状态: {state} | 应用: {app_name} | 窗口/工程: {file_path}")
+                state = "闲置" if is_idle else ("无效窗口" if not current_valid else "记时")
+                print(f"[DEBUG] {state} | 累计:{accumulated}s | {app_name} | {file_path}")
 
-            # 5. 更新实时状态板 (用于前端顶部状态栏和悬浮窗显示)
-            try:
-                with get_connection() as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO runtime_status (id, updated_at, is_idle, idle_seconds, app_name, file_path) "
-                        "VALUES (1, ?, ?, ?, ?, ?)",
-                        (datetime.datetime.now().isoformat(), 1 if is_idle else 0, float(idle_time or 0), app_name, file_path),
-                    )
-                    conn.commit()
-            except Exception as e:
-                print(f"[ERROR] Failed to update runtime status: {e}")
-                print(traceback.format_exc())
-                
     except KeyboardInterrupt:
-        print("\n⏹️ 后台采集引擎已手动停止。")
+        print("\n⏹️ 收到停止信号")
+        if accumulated > 0 and last_valid:
+            write_activity_log(last_app, last_file, accumulated)
     except Exception as e:
-        print(f"\n❌ 后台引擎发生错误: {e}")
+        print(f"\n❌ 错误: {e}")
         print(traceback.format_exc())
     finally:
-        # 等待用户按键后才关闭窗口，方便查看错误信息
-        print("\n" + "=" * 60)
-        print("按 Enter 键退出...")
-        print("=" * 60)
-        input()
+        print("=" * 50)
+        print("服务已停止")
+        print("=" * 50)
+
 
 if __name__ == "__main__":
     run_daemon()
