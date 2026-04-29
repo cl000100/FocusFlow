@@ -891,37 +891,6 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(400)
         layout = QVBoxLayout(self)
         
-        # ========== 主题设置 ==========
-        group_theme = QGroupBox("界面主题")
-        theme_layout = QVBoxLayout(group_theme)
-        
-        # 获取当前主题设置
-        self.current_theme = get_config("app_theme", "dark")
-        
-        # 主题切换按钮组
-        theme_button_layout = QHBoxLayout()
-        
-        self.btn_dark_theme = QPushButton("🌙 深色模式")
-        self.btn_dark_theme.setCheckable(True)
-        self.btn_dark_theme.setChecked(self.current_theme == "dark")
-        self.btn_dark_theme.clicked.connect(lambda: self.set_theme("dark"))
-        theme_button_layout.addWidget(self.btn_dark_theme)
-        
-        self.btn_light_theme = QPushButton("☀️ 浅色模式")
-        self.btn_light_theme.setCheckable(True)
-        self.btn_light_theme.setChecked(self.current_theme == "light")
-        self.btn_light_theme.clicked.connect(lambda: self.set_theme("light"))
-        theme_button_layout.addWidget(self.btn_light_theme)
-        
-        theme_layout.addLayout(theme_button_layout)
-        
-        # 提示标签
-        self.lbl_theme_hint = QLabel("💡 提示：切换主题后需要重启应用才能完全生效")
-        self.lbl_theme_hint.setStyleSheet("color: #888888; font-size: 11px; padding: 5px;")
-        theme_layout.addWidget(self.lbl_theme_hint)
-        
-        layout.addWidget(group_theme)
-        
         # ========== 后台采集设置 ==========
         group_gather = QGroupBox("后台采集设置")
         form = QFormLayout(group_gather)
@@ -933,33 +902,7 @@ class SettingsDialog(QDialog):
         row = conn.execute("SELECT value FROM system_config WHERE key='idle_threshold'").fetchone()
         if row: self.spin_idle.setValue(int(row[0]))
         layout.addWidget(group_gather)
-        
-        # ========== 数据库设置 ==========
-        group_db = QGroupBox("数据库设置")
-        db_layout = QVBoxLayout(group_db)
-        
-        # 当前数据库路径显示
-        db_path_layout = QHBoxLayout()
-        self.lbl_db_path = QLabel()
-        current_db_path = get_db_path()
-        self.lbl_db_path.setText(f"当前数据库：{current_db_path}")
-        self.lbl_db_path.setWordWrap(True)
-        self.lbl_db_path.setStyleSheet("color: #888888; font-size: 11px; padding: 5px;")
-        db_path_layout.addWidget(self.lbl_db_path, 1)
-        
-        btn_change_db = QPushButton("更改位置")
-        btn_change_db.clicked.connect(self.change_database_path)
-        db_path_layout.addWidget(btn_change_db)
-        
-        db_layout.addLayout(db_path_layout)
-        
-        # 打开数据库目录按钮
-        btn_open_db_dir = QPushButton("📁 打开数据库所在目录")
-        btn_open_db_dir.clicked.connect(self.open_database_directory)
-        db_layout.addWidget(btn_open_db_dir)
-        
-        layout.addWidget(group_db)
-        
+
         # ========== 危险操作 ==========
         group_danger = QGroupBox("危险操作")
         v_danger = QVBoxLayout(group_danger)
@@ -978,20 +921,8 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.save_settings)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-    
-    def set_theme(self, theme):
-        """设置主题"""
-        self.current_theme = theme
-        if theme == "dark":
-            self.btn_dark_theme.setChecked(True)
-            self.btn_light_theme.setChecked(False)
-        else:
-            self.btn_dark_theme.setChecked(False)
-            self.btn_light_theme.setChecked(True)
+
     def save_settings(self):
-        # 保存主题设置
-        set_config("app_theme", self.current_theme)
-        
         # 保存空闲阈值设置
         conn = get_connection()
         conn.execute("INSERT OR REPLACE INTO system_config (key, value) VALUES ('idle_threshold', ?)", (str(self.spin_idle.value()),))
@@ -1014,64 +945,6 @@ class SettingsDialog(QDialog):
             conn.commit()
             conn.close()
             self.accept()
-    
-    def change_database_path(self):
-        """更改数据库路径"""
-        # 打开文件选择对话框
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "选择数据库文件位置",
-            "",
-            "SQLite Database (*.db);;All Files (*)"
-        )
-        
-        if file_path:
-            # 确保目录存在
-            db_dir = os.path.dirname(file_path)
-            os.makedirs(db_dir, exist_ok=True)
-            
-            try:
-                # 备份当前数据库
-                current_db = get_db_path()
-                if os.path.exists(current_db):
-                    import shutil
-                    shutil.copy2(current_db, file_path)
-                    QMessageBox.information(
-                        self, 
-                        "成功", 
-                        f"数据库已迁移到新位置：\n{file_path}\n\n原数据库保留在：\n{current_db}"
-                    )
-                else:
-                    QMessageBox.information(
-                        self, 
-                        "成功", 
-                        f"新数据库将在首次运行时创建在：\n{file_path}"
-                    )
-                
-                # 保存新路径
-                set_db_path(file_path)
-                
-                # 更新显示
-                self.lbl_db_path.setText(f"当前数据库：{file_path}")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"迁移失败：{str(e)}")
-    
-    def open_database_directory(self):
-        """打开数据库所在目录"""
-        import subprocess
-        db_path = get_db_path()
-        db_dir = os.path.dirname(db_path)
-        
-        try:
-            if sys.platform == 'win32':
-                subprocess.Popen(f'explorer "{db_dir}"')
-            elif sys.platform == 'darwin':
-                subprocess.Popen(['open', db_dir])
-            else:
-                subprocess.Popen(['xdg-open', db_dir])
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法打开目录：{str(e)}")
 
 
 
@@ -1253,9 +1126,9 @@ class DataDashboardWindow(QDialog):
         self.setWindowTitle("生产力数据大屏 (本周洞察)")
         self.resize(1200, 800)  # 加宽以容纳时间轴
         self.setMinimumSize(900, 600)
-        
-        # 读取配置的主题设置
-        self.is_dark_mode = get_config("app_theme", "dark") == "dark"
+
+        # 强制使用暗色模式
+        self.is_dark_mode = True
         
         # 强制 Matplotlib 使用 Mac 系统自带的中文字体（防止中文变成小方块）
         import platform
@@ -1366,6 +1239,9 @@ class DataDashboardWindow(QDialog):
                 background-color: {selected_text};
                 color: white;
             }}
+            QWidget {{
+                background-color: {bg_color};
+            }}
         """)
         
         # 顶部标题栏
@@ -1417,9 +1293,11 @@ class DataDashboardWindow(QDialog):
         filter_layout.addWidget(QLabel("项目:"))
         self.combo_project = QComboBox()
         self.combo_project.addItem("全部", None)  # (显示文本，项目 ID)
-        
+
         # 添加项目/子项目层级
-        show_archived = self.chk_archived.isChecked()
+        # chk_archived 在 DashboardV2 上，parent() 返回调用者（DashboardV2）
+        parent_dashboard = self.parent()
+        show_archived = parent_dashboard.chk_archived.isChecked() if parent_dashboard and hasattr(parent_dashboard, 'chk_archived') else False
         projects_data = get_projects_with_subprojects(show_archived)
         for project_key, project_name in projects_data:
             if project_key == '未分配':
@@ -2883,10 +2761,10 @@ class TimelineWidget(QWidget):
 class DashboardV2(QMainWindow):
     def __init__(self):
         super().__init__()
-        
-        # 读取配置的主题设置
-        self.is_dark_mode = get_config("app_theme", "dark") == "dark"
-        
+
+        # 强制使用暗色模式
+        self.is_dark_mode = True
+
         init_db()  
         self.setWindowTitle("FocusFlow - Fenghu专业工时看板")
         self.resize(1300, 800)
@@ -2898,7 +2776,10 @@ class DashboardV2(QMainWindow):
 
         self._current_track_path = None
         self._session_seconds = 0
-        
+
+        # 强制使用暗色模式
+        self.is_dark_mode = True
+
         # 提前实例化悬浮窗（在 setup_ui 之前）
         self.floating_widget = FloatingWidget(self)
 
