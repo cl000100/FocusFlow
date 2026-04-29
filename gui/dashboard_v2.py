@@ -36,6 +36,7 @@ from core.project_tree import (
     archive_project, restore_project, remove_file_assignment
 )
 from gui.data_management import DataManagementDialog
+from gui.project_rules_dialog import ProjectRulesDialog
 from core.database import get_unique_apps, get_unique_projects, query_timeline_data
 
 import sys
@@ -551,6 +552,14 @@ class InboxOrganizerDialog(QDialog):
         filter_layout.addWidget(self.filter_input)
         main_layout.addLayout(filter_layout)
 
+        # ===== 提取规则按钮 =====
+        extract_layout = QHBoxLayout()
+        self.btn_extract = QPushButton("🔍 提取规则")
+        self.btn_extract.clicked.connect(self.extract_rules)
+        extract_layout.addWidget(self.btn_extract)
+        extract_layout.addStretch()
+        main_layout.addLayout(extract_layout)
+
         # ===== 分组模式 =====
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("分组方式:"))
@@ -572,6 +581,7 @@ class InboxOrganizerDialog(QDialog):
         # ===== 分组列表（可展开的树形） =====
         self.group_tree = QTreeWidget()
         self.group_tree.setHeaderLabels(["", "文件列表", ""])
+        self.group_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.group_tree.setColumnWidth(0, 100)
         self.group_tree.setColumnWidth(1, 500)
         self.group_tree.setColumnWidth(2, 120)
@@ -672,6 +682,66 @@ class InboxOrganizerDialog(QDialog):
             except Exception:
                 pass
 
+    def get_selected_files_from_tree(self):
+        """从 group_tree 中获取当前选中的文件"""
+        selected = []
+        for i in range(self.group_tree.topLevelItemCount()):
+            group_item = self.group_tree.topLevelItem(i)
+            for j in range(group_item.childCount()):
+                child = group_item.child(j)
+                if child.checkState(0) == Qt.Checked:
+                    data = child.data(0, Qt.UserRole)
+                    if data and data['type'] == 'file':
+                        selected.append(data['file'])
+        return selected
+
+    def get_rule_matched_files(self):
+        """获取已被 project_map 规则匹配的文件路径集合"""
+        matched = set()
+        conn = get_connection()
+        # 查找所有规则
+        rules = conn.execute("SELECT rule_path FROM project_map WHERE rule_path IS NOT NULL AND rule_path != ''").fetchall()
+        # 查找所有有 file_assignment 的文件
+        assigned = conn.execute("SELECT file_path FROM file_assignment").fetchall()
+        assigned_paths = {r[0] for r in assigned}
+
+        # 从 activity_log 找匹配的文件（大小写不敏感）
+        for rule_row in rules:
+            rule = rule_row[0]
+            if not rule:
+                continue
+            rows = conn.execute(
+                "SELECT DISTINCT file_path FROM activity_log WHERE file_path LIKE ? COLLATE NOCASE",
+                (f"%{rule}%",)
+            ).fetchall()
+            for row in rows:
+                if row[0] not in assigned_paths:
+                    matched.add(row[0])
+
+        conn.close()
+        return matched
+
+    def extract_rules(self):
+        """打开智能提取规则对话框"""
+        # 从当前 group_tree 中获取选中的文件
+        selected_files = self.get_selected_files_from_tree()
+        if not selected_files:
+            QMessageBox.warning(self, "提示", "请先在列表中勾选要提取规则的文件")
+            return
+        from gui.rule_extractor_dialog import RuleExtractorDialog
+        dlg = RuleExtractorDialog(selected_files, self)
+        if dlg.exec():
+            # 重新加载已分配的文件
+            self.fetch_inbox_selection()
+            # 刷新项目下拉框
+            self.load_projects()
+            # 刷新分组列表（过滤掉已匹配的文件）
+            self.load_groups()
+            # 刷新父窗口项目列表
+            parent = self.parent()
+            if parent and hasattr(parent, 'refresh_data'):
+                parent.refresh_data()
+
     def on_filter_changed(self):
         """筛选变化时重新加载"""
         self.load_groups()
@@ -683,6 +753,12 @@ class InboxOrganizerDialog(QDialog):
 
         filter_text = self.filter_input.text().lower()
 
+        # 获取已匹配规则的文件（从 project_map）
+        matched_files = self.get_rule_matched_files()
+
+        # 过滤掉已匹配的文件
+        filtered_files = [f for f in self.selected_files if f['file_path'] not in matched_files]
+
         # 判断当前模式
         if self.btn_by_folder.isChecked():
             mode = 0  # 按文件夹
@@ -693,7 +769,7 @@ class InboxOrganizerDialog(QDialog):
 
         if mode == 0:  # 按文件夹
             groups = {}
-            for f in self.selected_files:
+            for f in filtered_files:
                 folder = os.path.dirname(f['file_path'])
                 full_path = folder if folder else '/'
                 if filter_text and filter_text not in full_path.lower():
@@ -704,7 +780,7 @@ class InboxOrganizerDialog(QDialog):
                 groups[key]['files'].append(f)
         elif mode == 1:  # 按应用
             groups = {}
-            for f in self.selected_files:
+            for f in filtered_files:
                 app = f['app_name'] or 'Unknown'
                 if filter_text and filter_text not in app.lower():
                     continue
@@ -713,7 +789,7 @@ class InboxOrganizerDialog(QDialog):
                 groups[app]['files'].append(f)
         else:  # 按文件名
             groups = {}
-            for f in self.selected_files:
+            for f in filtered_files:
                 fname = os.path.basename(f['file_path'])
                 key = fname.split('.')[0] if '.' in fname else fname
                 if filter_text and filter_text not in key.lower():
@@ -882,6 +958,10 @@ class InboxOrganizerDialog(QDialog):
 
         self.update_assign_button_text()
         QMessageBox.information(self, "完成", f"已分配 {len(selected_files)} 个文件到 '{project_name}'")
+        # 刷新父窗口项目列表
+        parent = self.parent()
+        if parent and hasattr(parent, 'refresh_data'):
+            parent.refresh_data()
 
 
 class SettingsDialog(QDialog):
@@ -3103,7 +3183,7 @@ class DashboardV2(QMainWindow):
         self.btn_view_fragments.clicked.connect(self.show_fragment_dialog)
         inbox_action_bar.addWidget(self.btn_view_fragments)
         
-        self.btn_extract_rules = QPushButton("智能提取规则")
+        self.btn_extract_rules = QPushButton("📦 Inbox 整理")
         self.btn_extract_rules.clicked.connect(lambda: InboxOrganizerDialog(self).exec())
         self.btn_extract_rules.setEnabled(False)
         inbox_action_bar.addWidget(self.btn_extract_rules)
@@ -3328,40 +3408,42 @@ class DashboardV2(QMainWindow):
         conn = get_connection()
         
         # 获取所有项目的自动分配规则
-        rules = conn.execute("SELECT project_id, rule_path FROM project_map WHERE rule_path IS NOT NULL AND rule_path != ''").fetchall()
-        
+        rules = conn.execute("SELECT id, project_id, rule_path FROM project_map WHERE rule_path IS NOT NULL AND rule_path != ''").fetchall()
+
         if rules:
             # 获取未分配的文件
             unassigned = conn.execute("""
-                SELECT DISTINCT file_path, app_name 
-                FROM activity_log 
+                SELECT DISTINCT file_path, app_name
+                FROM activity_log
                 WHERE file_path NOT IN (SELECT file_path FROM file_assignment)
             """).fetchall()
-            
+
             for fpath, app_name in unassigned:
                 if not fpath: continue
-                
+                fpath_lower = fpath.lower()
+                app_name_lower = (app_name or "").lower()
+
                 # 检查每个规则
-                for pid, rule in rules:
+                for rule_id, pid, rule in rules:
                     if not rule: continue
-                    
+
                     matched = False
-                    
+
                     # 检查规则类型前缀
                     if rule.startswith('app:'):
                         # 应用名匹配
                         pattern = rule[4:]  # 去掉 'app:' 前缀
-                        if app_name and pattern in app_name:
+                        if app_name and pattern.lower() in app_name_lower:
                             matched = True
                     elif rule.startswith('path:'):
-                        # 文件路径匹配
+                        # 文件路径匹配（大小写不敏感）
                         pattern = rule[5:]  # 去掉 'path:' 前缀
-                        if pattern in fpath or (app_name and pattern in app_name):
+                        if pattern.lower() in fpath_lower or (app_name and pattern.lower() in app_name_lower):
                             matched = True
                     elif rule.startswith('folder:'):
-                        # 文件夹匹配
+                        # 文件夹匹配（大小写不敏感）
                         pattern = rule[7:]  # 去掉 'folder:' 前缀
-                        if pattern in fpath:
+                        if pattern.lower() in fpath_lower:
                             matched = True
                     elif rule.startswith('combo:'):
                         # 组合匹配：格式为 "combo:app:Trae,file:FocusFlow"
@@ -3371,26 +3453,26 @@ class DashboardV2(QMainWindow):
                         for part in parts:
                             if ':' in part:
                                 type_part, sub_pattern = part.split(':', 1)
-                                if type_part == 'app' and (not app_name or sub_pattern not in app_name):
+                                if type_part == 'app' and (not app_name or sub_pattern.lower() not in app_name_lower):
                                     all_match = False
                                     break
-                                elif type_part == 'file' and sub_pattern not in fpath:
+                                elif type_part == 'file' and sub_pattern.lower() not in fpath_lower:
                                     all_match = False
                                     break
-                                elif type_part == 'path' and (sub_pattern not in fpath and (not app_name or sub_pattern not in app_name)):
+                                elif type_part == 'path' and (sub_pattern.lower() not in fpath_lower and (not app_name or sub_pattern.lower() not in app_name_lower)):
                                     all_match = False
                                     break
                         if all_match:
                             matched = True
                     else:
-                        # 默认：文件名匹配（无前缀，保持兼容性）
-                        if rule in fpath:
+                        # 普通关键词匹配（大小写不敏感）
+                        if rule.lower() in fpath_lower or (app_name and rule.lower() in app_name_lower):
                             matched = True
                     
                     if matched:
                         conn.execute(
-                            "INSERT OR IGNORE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)", 
-                            (fpath, pid, datetime.now().isoformat())
+                            "INSERT OR IGNORE INTO file_assignment (file_path, project_id, assigned_at, source_rule_id) VALUES (?, ?, ?, ?)",
+                            (fpath, pid, datetime.now().isoformat(), rule_id)
                         )
                         break
         
@@ -3916,7 +3998,7 @@ class DashboardV2(QMainWindow):
             name_pure = item_node.text().replace("[归档] ", "")
             menu.addAction("➕ 新建子项目").triggered.connect(lambda: self.action_new_project(project_id))
             menu.addAction("✏️ 重命名").triggered.connect(lambda: self.action_rename_project(project_id, name_pure))
-            menu.addAction("🤖 编辑自动匹配规则...").triggered.connect(lambda: RuleManagementDialog(self, project_id).exec())
+            menu.addAction("🤖 管理项目...").triggered.connect(lambda: (ProjectRulesDialog(project_id, name_pure, self).exec(), self.refresh_data()))
             
             # 【新增】：导出 Excel 账单
             menu.addSeparator()
