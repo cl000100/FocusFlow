@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTreeView, QHeaderView, QLabel, QPushButton, QMenu,
     QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox, 
     QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog, QFrame, QSizePolicy, QScrollArea,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QDateEdit
+    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QDateEdit, QLineEdit
 )
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont, QPainter, QColor, QPen, QBrush, QIcon, QAction, QPixmap
 from PySide6.QtCore import Qt, QModelIndex, QTimer, QItemSelectionModel
@@ -539,7 +539,8 @@ class ProjectRulesDialog(QDialog):
         text, ok = QInputDialog.getText(self, "添加规则", "输入路径/标题匹配关键词：")
         if ok and text.strip():
             conn = get_connection()
-            conn.execute("INSERT INTO project_map (project_id, rule_path) VALUES (?, ?)", (self.project_id, text.strip()))
+            conn.execute("INSERT INTO project_map (project_id, project_name, rule_path) VALUES (?, ?, ?)", 
+                        (self.project_id, self.project_name, text.strip()))
             conn.commit()
             conn.close()
             self.load_data()
@@ -1087,7 +1088,8 @@ class DataDashboardWindow(QDialog):
         self.combo_project.addItem("全部", None)  # (显示文本，项目 ID)
         
         # 添加项目/子项目层级
-        projects_data = get_projects_with_subprojects()
+        show_archived = self.chk_archived.isChecked()
+        projects_data = get_projects_with_subprojects(show_archived)
         for project_key, project_name in projects_data:
             if project_key == '未分配':
                 self.combo_project.addItem(project_name, '未分配')
@@ -2371,7 +2373,7 @@ class TimelineWidget(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             # 检测是否是双击
-            if event.type() == Qt.MouseButtonDblClick:
+            if event.clickCount() == 2:
                 # 显示详情
                 self.show_block_details(event.position().x())
                 return
@@ -2731,9 +2733,96 @@ class DashboardV2(QMainWindow):
         left_header.addWidget(self.chk_archived)
         left_layout.addLayout(left_header)
 
-        self.tree_projects = QTreeView()
+        # 自定义 QTreeView 子类，重写 dropEvent 方法
+        class CustomTreeView(QTreeView):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.parent_window = parent
+            
+            def dropEvent(self, event):
+                if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
+                    # 获取被拖拽的项目
+                    source_index = self.currentIndex()
+                    if not source_index.isValid():
+                        from PySide6.QtWidgets import QMessageBox
+                        QMessageBox.information(self, "调试", "源索引无效")
+                        return
+                    
+                    # 获取源项目的ID
+                    source_item = self.model().itemFromIndex(source_index)
+                    source_id = source_item.data(Qt.UserRole + 1)
+                    source_name = source_item.text()
+                    if not source_id:
+                        from PySide6.QtWidgets import QMessageBox
+                        QMessageBox.information(self, "调试", f"源项目ID无效: {source_name}")
+                        return
+                    
+                    # 获取目标项目
+                    target_index = self.indexAt(event.pos())
+                    target_id = None
+                    target_name = "根节点"
+                    
+                    if target_index.isValid():
+                        # 获取目标项目的ID
+                        target_item = self.model().itemFromIndex(target_index)
+                        target_id = target_item.data(Qt.UserRole + 1)
+                        target_name = target_item.text()
+                        
+                        # 如果目标是文件，获取其父项目的ID
+                        if not target_id:
+                            parent_item = target_item.parent()
+                            if parent_item:
+                                target_id = parent_item.data(Qt.UserRole + 1)
+                                target_name = f"{parent_item.text()} (文件: {target_name})"
+                            else:
+                                from PySide6.QtWidgets import QMessageBox
+                                QMessageBox.information(self, "调试", f"目标文件没有父项目: {target_name}")
+                                return
+                    
+                    # 防止循环依赖
+                    if source_id == target_id:
+                        from PySide6.QtWidgets import QMessageBox
+                        QMessageBox.information(self, "调试", "源项目和目标项目相同，取消操作")
+                        return
+                    
+                    # 调用move_project函数
+                    from core.project_tree import move_project
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.information(self, "调试", f"准备移动项目: {source_name} (ID: {source_id}) 到 {target_name} (ID: {target_id})")
+                    
+                    success = move_project(source_id, target_id)
+                    
+                    if success:
+                        QMessageBox.information(self, "调试", "项目移动成功，正在刷新项目树...")
+                        # 强制刷新项目树，不依赖哈希检查
+                        if self.parent_window:
+                            self.parent_window.save_tree_state()
+                            self.parent_window.model_projects.removeRows(0, self.parent_window.model_projects.rowCount())
+                            
+                            show_archived = self.parent_window.chk_archived.isChecked()
+                            tree = load_project_tree()
+                            for root in tree.get_root_nodes():
+                                if not root.is_archived or show_archived:
+                                    self.parent_window._build_project_tree_recursive(root, self.parent_window.model_projects.invisibleRootItem(), show_archived)
+                                    
+                            self.parent_window.restore_tree_state()
+                            self.parent_window.last_tree_hash = None  # 重置哈希值，确保下次刷新时重新计算
+                            QMessageBox.information(self, "调试", "项目树刷新完成")
+                    else:
+                        QMessageBox.information(self, "调试", "项目移动失败")
+                    
+                    event.acceptProposedAction()
+                else:
+                    super().dropEvent(event)
+        
+        self.tree_projects = CustomTreeView(self)
         self.tree_projects.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tree_projects.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tree_projects.setSelectionMode(QAbstractItemView.ExtendedSelection)  # 支持 Ctrl 加选和 Shift 连选
+        self.tree_projects.setDragEnabled(True)
+        self.tree_projects.setAcceptDrops(True)
+        self.tree_projects.setDropIndicatorShown(True)
+        self.tree_projects.setDragDropMode(QAbstractItemView.DragDrop)
         self.tree_projects.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree_projects.customContextMenuRequested.connect(self.show_project_menu)
         left_layout.addWidget(self.tree_projects)
@@ -2788,6 +2877,11 @@ class DashboardV2(QMainWindow):
         self.btn_assign_selected.setEnabled(False)
         inbox_action_bar.addWidget(self.btn_assign_selected)
         
+        self.btn_direct_assign = QPushButton("直接分配")
+        self.btn_direct_assign.clicked.connect(self.action_direct_assign)
+        self.btn_direct_assign.setEnabled(False)
+        inbox_action_bar.addWidget(self.btn_direct_assign)
+        
         self.btn_clear_selection = QPushButton("取消选择")
         self.btn_clear_selection.clicked.connect(self.clear_inbox_selection)
         self.btn_clear_selection.setEnabled(False)
@@ -2796,6 +2890,11 @@ class DashboardV2(QMainWindow):
         self.btn_view_fragments = QPushButton("🗑 查看碎片记录")
         self.btn_view_fragments.clicked.connect(self.show_fragment_dialog)
         inbox_action_bar.addWidget(self.btn_view_fragments)
+        
+        self.btn_extract_rules = QPushButton("智能提取规则")
+        self.btn_extract_rules.clicked.connect(self.show_extract_rules_dialog)
+        self.btn_extract_rules.setEnabled(False)
+        inbox_action_bar.addWidget(self.btn_extract_rules)
         
         right_layout.addLayout(inbox_action_bar)
 
@@ -2825,6 +2924,8 @@ class DashboardV2(QMainWindow):
         
         # 【新增】监听选择变化
         self.tree_inbox.selectionModel().selectionChanged.connect(self.on_inbox_selection_changed)
+        # 监听左边项目列表的选择变化
+        self.tree_projects.selectionModel().selectionChanged.connect(self.on_project_selection_changed)
         
         # 【新增】Inbox 分组视图状态管理
         self.inbox_expanded_apps = set()  # 记录展开的程序名
@@ -2984,8 +3085,10 @@ class DashboardV2(QMainWindow):
             if pid:
                 # 这是一个项目，获取项目最新总时长
                 stats = get_project_stats(pid, include_children=False)
-                item_total.setText(format_duration(stats['total']))
-                item_today.setText(format_duration(stats['today']))
+                if item_total:
+                    item_total.setText(format_duration(stats['total']))
+                if item_today:
+                    item_today.setText(format_duration(stats['today']))
             elif fpath:
                 # 这是一个文件，直接用 SQL 极速查出它的最新时长
                 # 【性能优化】：使用区间查询替代 DATE() 函数，使索引生效
@@ -2996,8 +3099,10 @@ class DashboardV2(QMainWindow):
                     FROM activity_log WHERE file_path = ?
                 """, (today_start, tomorrow_start, fpath)).fetchone()
                 if row:
-                    item_total.setText(format_duration(row[0]))
-                    item_today.setText(format_duration(row[1]))
+                    if item_total:
+                        item_total.setText(format_duration(row[0]))
+                    if item_today:
+                        item_today.setText(format_duration(row[1]))
             
             # 递归更新子节点
             if item_name.hasChildren():
@@ -3007,17 +3112,76 @@ class DashboardV2(QMainWindow):
             conn.close()
 
     def _auto_assign_from_rules(self):
+        """根据 project_map 表的规则自动分配文件到项目"""
         conn = get_connection()
+        
+        # 获取所有项目的自动分配规则
         rules = conn.execute("SELECT project_id, rule_path FROM project_map WHERE rule_path IS NOT NULL AND rule_path != ''").fetchall()
+        
         if rules:
-            unassigned = conn.execute("SELECT DISTINCT file_path FROM activity_log WHERE file_path NOT IN (SELECT file_path FROM file_assignment)").fetchall()
-            for (fpath,) in unassigned:
+            # 获取未分配的文件
+            unassigned = conn.execute("""
+                SELECT DISTINCT file_path, app_name 
+                FROM activity_log 
+                WHERE file_path NOT IN (SELECT file_path FROM file_assignment)
+            """).fetchall()
+            
+            for fpath, app_name in unassigned:
                 if not fpath: continue
+                
+                # 检查每个规则
                 for pid, rule in rules:
-                    if rule and rule in fpath:
-                        conn.execute("INSERT OR IGNORE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)", 
-                                     (fpath, pid, datetime.now().isoformat()))
+                    if not rule: continue
+                    
+                    matched = False
+                    
+                    # 检查规则类型前缀
+                    if rule.startswith('app:'):
+                        # 应用名匹配
+                        pattern = rule[4:]  # 去掉 'app:' 前缀
+                        if app_name and pattern in app_name:
+                            matched = True
+                    elif rule.startswith('path:'):
+                        # 文件路径匹配
+                        pattern = rule[5:]  # 去掉 'path:' 前缀
+                        if pattern in fpath or (app_name and pattern in app_name):
+                            matched = True
+                    elif rule.startswith('folder:'):
+                        # 文件夹匹配
+                        pattern = rule[7:]  # 去掉 'folder:' 前缀
+                        if pattern in fpath:
+                            matched = True
+                    elif rule.startswith('combo:'):
+                        # 组合匹配：格式为 "combo:app:Trae,file:FocusFlow"
+                        pattern = rule[6:]  # 去掉 'combo:' 前缀
+                        parts = pattern.split(',')
+                        all_match = True
+                        for part in parts:
+                            if ':' in part:
+                                type_part, sub_pattern = part.split(':', 1)
+                                if type_part == 'app' and (not app_name or sub_pattern not in app_name):
+                                    all_match = False
+                                    break
+                                elif type_part == 'file' and sub_pattern not in fpath:
+                                    all_match = False
+                                    break
+                                elif type_part == 'path' and (sub_pattern not in fpath and (not app_name or sub_pattern not in app_name)):
+                                    all_match = False
+                                    break
+                        if all_match:
+                            matched = True
+                    else:
+                        # 默认：文件名匹配（无前缀，保持兼容性）
+                        if rule in fpath:
+                            matched = True
+                    
+                    if matched:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)", 
+                            (fpath, pid, datetime.now().isoformat())
+                        )
                         break
+        
         conn.commit()
         conn.close()
     def _update_top_stats(self):
@@ -3096,9 +3260,14 @@ class DashboardV2(QMainWindow):
                             break
             
             if target_pid:
-                p_name = conn.execute("SELECT project_name FROM projects WHERE id = ?", (target_pid,)).fetchone()[0]
-                stats = get_project_stats(target_pid, include_children=True)
-                p_today, p_total = stats['today'], stats['total']
+                project_row = conn.execute("SELECT project_name FROM projects WHERE id = ?", (target_pid,)).fetchone()
+                if project_row:
+                    p_name = project_row[0]
+                    stats = get_project_stats(target_pid, include_children=True)
+                    p_today, p_total = stats['today'], stats['total']
+                else:
+                    p_name = "未知项目"
+                    p_today, p_total = 0, 0
 
         conn.close()
 
@@ -3482,6 +3651,43 @@ class DashboardV2(QMainWindow):
     def show_project_menu(self, pos):
         index = self.tree_projects.indexAt(pos)
         menu = QMenu(self)
+        
+        # 检查是否有选中的项目
+        selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        selected_count = len(selected_indexes)
+        
+        # 检查选中的是项目还是文件
+        selected_items = []
+        has_files = False
+        has_projects = False
+        for idx in selected_indexes:
+            item_node = self.model_projects.itemFromIndex(idx.siblingAtColumn(0))
+            project_id = item_node.data(Qt.UserRole + 1)
+            file_path = item_node.data(Qt.UserRole + 2)
+            if file_path:
+                has_files = True
+                selected_items.append(("file", file_path))
+            elif project_id:
+                has_projects = True
+                selected_items.append(("project", project_id))
+        
+        # 如果有多选，显示批量操作菜单
+        if selected_count > 1:
+            # 如果只选中了项目，显示项目的批量操作
+            if has_projects and not has_files:
+                menu.addAction(f"🗑️ 批量删除选中的 {selected_count} 个项目").triggered.connect(self.action_delete_selected_projects)
+                menu.addAction(f"📦 批量归档选中的 {selected_count} 个项目").triggered.connect(self.action_archive_selected_projects)
+                menu.addSeparator()
+                menu.addAction("📤 导出项目和规则...").triggered.connect(self.action_export_projects)
+            # 如果只选中了文件，显示文件的批量操作
+            elif has_files and not has_projects:
+                menu.addAction(f"↩️ 批量移出选中的 {selected_count} 个文件").triggered.connect(self.action_remove_selected_files)
+            # 如果混合选中了项目和文件，只显示通用操作
+            else:
+                menu.addAction("📤 导出项目和规则...").triggered.connect(self.action_export_projects)
+            menu.exec_(self.tree_projects.viewport().mapToGlobal(pos))
+            return
+        
         if not index.isValid():
             menu.addAction("➕ 新建根项目").triggered.connect(lambda: self.action_new_project(None))
             menu.exec(self.tree_projects.viewport().mapToGlobal(pos))
@@ -3512,7 +3718,10 @@ class DashboardV2(QMainWindow):
             else:
                 menu.addAction("归档项目").triggered.connect(lambda: self.action_archive_project(project_id))
             menu.addAction("删除").triggered.connect(lambda: self.action_delete_project(project_id))
-
+            menu.addSeparator()
+            menu.addAction("📤 导出项目和规则...").triggered.connect(self.action_export_projects)
+            menu.addAction("📥 导入项目和规则...").triggered.connect(self.action_import_projects)
+        
         menu.exec_(self.tree_projects.viewport().mapToGlobal(pos))
 
     def show_inbox_menu(self, pos):
@@ -3566,8 +3775,58 @@ class DashboardV2(QMainWindow):
     def action_new_project(self, parent_id):
         name, ok = QInputDialog.getText(self, "新建项目", "请输入项目名称：")
         if ok and name.strip():
-            create_project(name.strip(), parent_id)
-            self.refresh_data()
+            print(f"[调试] action_new_project: name={name.strip()}, parent_id={parent_id}")
+            project_id = create_project(name.strip(), parent_id)
+            print(f"[调试] create_project 返回值: {project_id}")
+            if project_id is None:
+                from PySide6.QtWidgets import QMessageBox
+                print(f"[调试] 显示警告消息：项目名称已存在")
+                QMessageBox.warning(self, "提示", "该项目名称已存在，请使用其他名称。")
+            else:
+                print(f"[调试] 调用 refresh_data()")
+                self.refresh_data()
+                
+                # 展开父项目节点，以便用户可以看到新创建的子项目
+                if parent_id is not None:
+                    # 查找父项目节点
+                    def find_parent_item(item, parent_id):
+                        if item.data(Qt.UserRole + 1) == parent_id:
+                            return item
+                        for i in range(item.rowCount()):
+                            child = item.child(i)
+                            result = find_parent_item(child, parent_id)
+                            if result:
+                                return result
+                        return None
+                    
+                    root_item = self.model_projects.invisibleRootItem()
+                    parent_item = find_parent_item(root_item, parent_id)
+                    if parent_item:
+                        # 获取父项目节点的索引
+                        parent_index = self.model_projects.indexFromItem(parent_item)
+                        # 展开该节点
+                        self.tree_projects.expand(parent_index)
+                
+                # 查找并选中新创建的项目
+                def find_new_project_item(item, project_id):
+                    if item.data(Qt.UserRole + 1) == project_id:
+                        return item
+                    for i in range(item.rowCount()):
+                        child = item.child(i)
+                        result = find_new_project_item(child, project_id)
+                        if result:
+                            return result
+                    return None
+                
+                root_item = self.model_projects.invisibleRootItem()
+                new_project_item = find_new_project_item(root_item, project_id)
+                if new_project_item:
+                    # 获取新创建项目的索引
+                    new_project_index = self.model_projects.indexFromItem(new_project_item)
+                    # 选中该项目
+                    from PySide6.QtCore import QItemSelectionModel
+                    self.tree_projects.selectionModel().clearSelection()
+                    self.tree_projects.selectionModel().select(new_project_index, QItemSelectionModel.Select)
     def action_rename_project(self, project_id, old_name):
         new_name, ok = QInputDialog.getText(self, "重命名项目", "新名称：", text=old_name)
         if ok and new_name.strip() and new_name.strip() != old_name:
@@ -3589,6 +3848,65 @@ class DashboardV2(QMainWindow):
         if QMessageBox.question(self, "确认删除", "确定要删除该项目吗？绑定的文件将被退回Inbox。") == QMessageBox.Yes:
             if delete_project(project_id, delete_children=False): self.refresh_data()
             else: QMessageBox.warning(self, "删除失败", "请先删除它包含的子项目！")
+    
+    def action_delete_selected_projects(self):
+        # 获取所有选中的项目 ID
+        selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        project_ids = []
+        for index in selected_indexes:
+            item_node = self.model_projects.itemFromIndex(index.siblingAtColumn(0))
+            project_id = item_node.data(Qt.UserRole + 1)
+            if project_id:
+                project_ids.append(project_id)
+        
+        if not project_ids:
+            return
+        
+        if QMessageBox.question(self, "确认删除", f"确定要删除这 {len(project_ids)} 个项目吗？绑定的文件将被退回Inbox。") == QMessageBox.Yes:
+            for project_id in project_ids:
+                if not delete_project(project_id, delete_children=False):
+                    QMessageBox.warning(self, "删除失败", f"项目 {project_id} 包含子项目，请先删除子项目！")
+                    return
+            self.refresh_data()
+    
+    def action_archive_selected_projects(self):
+        # 获取所有选中的项目 ID
+        selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        project_ids = []
+        for index in selected_indexes:
+            item_node = self.model_projects.itemFromIndex(index.siblingAtColumn(0))
+            project_id = item_node.data(Qt.UserRole + 1)
+            if project_id:
+                project_ids.append(project_id)
+        
+        if not project_ids:
+            return
+        
+        if QMessageBox.question(self, "确认归档", f"确定要归档这 {len(project_ids)} 个项目吗？") == QMessageBox.Yes:
+            for project_id in project_ids:
+                if not archive_project(project_id):
+                    QMessageBox.warning(self, "归档失败", f"项目 {project_id} 包含子项目，只有没有子项目的最底层项目才能归档！")
+                    return
+            self.refresh_data()
+    
+    def action_remove_selected_files(self):
+        # 获取所有选中的文件路径
+        selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        file_paths = []
+        for index in selected_indexes:
+            item_node = self.model_projects.itemFromIndex(index.siblingAtColumn(0))
+            file_path = item_node.data(Qt.UserRole + 2)
+            if file_path:
+                file_paths.append(file_path)
+        
+        if not file_paths:
+            return
+        
+        if QMessageBox.question(self, "确认移出", f"确定要将这 {len(file_paths)} 个文件移出记录，退回Inbox吗？") == QMessageBox.Yes:
+            for file_path in file_paths:
+                remove_file_assignment(file_path)
+            self.refresh_data()
+    
     def action_export_bill(self, project_id, project_name):
         default_name = f"{project_name}_工时明细_{datetime.now().strftime('%Y%m%d')}.xlsx"
         file_path, _ = QFileDialog.getSaveFileName(self, "导出单项目账单", default_name, "Excel Files (*.xlsx)")
@@ -3775,7 +4093,8 @@ class DashboardV2(QMainWindow):
         combo = QComboBox()
         
         # 添加项目/子项目层级
-        projects_data = get_projects_with_subprojects()
+        show_archived = self.chk_archived.isChecked()
+        projects_data = get_projects_with_subprojects(show_archived)
         for project_key, project_name in projects_data:
             if project_key != '未分配':
                 project_id = int(project_key.replace('project_', ''))
@@ -3813,11 +4132,31 @@ class DashboardV2(QMainWindow):
         self.lbl_inbox_selected.setText(f"已选中 {count} 个文件")
         self.btn_assign_selected.setEnabled(count > 0)
         self.btn_clear_selection.setEnabled(count > 0)
+        self.btn_extract_rules.setEnabled(count > 0)
+        
+        # 检查左边项目列表的选择状态，启用或禁用直接分配按钮
+        left_selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        left_selected_count = len(left_selected_indexes)
+        
+        # 只有当inbox有选中文件且左边项目列表有且只有一个选中项目时，才启用直接分配按钮
+        self.btn_direct_assign.setEnabled(count > 0 and left_selected_count == 1)
     
     # 【新增】取消选择
     def clear_inbox_selection(self):
         self.tree_inbox.selectionModel().clear()
         self.on_inbox_selection_changed()
+    
+    # 【新增】监听左边项目列表的选择变化
+    def on_project_selection_changed(self):
+        # 当左边项目列表的选择状态改变时，更新直接分配按钮的状态
+        selected_indexes = self.tree_inbox.selectionModel().selectedRows()
+        count = len(selected_indexes)
+        
+        left_selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        left_selected_count = len(left_selected_indexes)
+        
+        # 只有当inbox有选中文件且左边项目列表有且只有一个选中项目时，才启用直接分配按钮
+        self.btn_direct_assign.setEnabled(count > 0 and left_selected_count == 1)
     
     # 【新增】筛选阈值变化
     def on_filter_threshold_changed(self, value):
@@ -3862,7 +4201,8 @@ class DashboardV2(QMainWindow):
         
         combo = QComboBox()
         # 添加项目/子项目层级
-        projects_data = get_projects_with_subprojects()
+        show_archived = self.chk_archived.isChecked()
+        projects_data = get_projects_with_subprojects(show_archived)
         for project_key, project_name in projects_data:
             if project_key != '未分配':
                 project_id = int(project_key.replace('project_', ''))
@@ -3916,7 +4256,8 @@ class DashboardV2(QMainWindow):
         
         combo = QComboBox()
         # 添加项目/子项目层级
-        projects_data = get_projects_with_subprojects()
+        show_archived = self.chk_archived.isChecked()
+        projects_data = get_projects_with_subprojects(show_archived)
         for project_key, project_name in projects_data:
             if project_key != '未分配':
                 project_id = int(project_key.replace('project_', ''))
@@ -3953,6 +4294,385 @@ class DashboardV2(QMainWindow):
             
             QMessageBox.information(self, "完成", f"已将 {count} 个文件分配到项目。")
             self.refresh_data()
+    
+    # 【新增】直接分配功能
+    def action_direct_assign(self):
+        # 检查左边项目列表的选择状态
+        left_selected_indexes = self.tree_projects.selectionModel().selectedRows()
+        if len(left_selected_indexes) != 1:
+            return QMessageBox.warning(self, "提示", "请在左侧项目列表中选择一个项目。")
+        
+        # 获取选中的项目ID
+        left_index = left_selected_indexes[0]
+        left_item = self.model_projects.itemFromIndex(left_index.siblingAtColumn(0))
+        project_id = left_item.data(Qt.UserRole + 1)
+        if not project_id:
+            return QMessageBox.warning(self, "提示", "请选择一个有效的项目。")
+        
+        # 获取inbox中选中的文件路径
+        selected_indexes = self.tree_inbox.selectionModel().selectedRows()
+        file_paths = []
+        for index in selected_indexes:
+            item = self.model_inbox.itemFromIndex(index.siblingAtColumn(0))
+            if item:
+                fpath = item.data(Qt.UserRole + 1)
+                if fpath:  # 有 file_path 说明是文件项，不是分组头
+                    file_paths.append(fpath)
+        
+        if not file_paths:
+            return QMessageBox.warning(self, "提示", "没有选中的文件。")
+        
+        # 确认对话框
+        project_name = left_item.text()
+        reply = QMessageBox.question(
+            self, "直接分配确认",
+            f"确定要将选中的 {len(file_paths)} 个文件直接分配到项目 \"{project_name}\" 吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 执行分配操作
+        conn = get_connection()
+        count = 0
+        for file_path in file_paths:
+            if file_path:
+                conn.execute(
+                    "INSERT OR REPLACE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
+                    (file_path, project_id, datetime.now().isoformat())
+                )
+                count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        QMessageBox.information(self, "完成", f"已将 {count} 个文件直接分配到项目 \"{project_name}\"。")
+        self.clear_inbox_selection()
+        self.refresh_data()
+    
+    # 【新增】智能提取规则对话框
+    def show_extract_rules_dialog(self):
+        from core import RuleEngine
+        
+        # 获取inbox中选中的文件信息
+        selected_indexes = self.tree_inbox.selectionModel().selectedRows()
+        selected_files = []
+        for index in selected_indexes:
+            item = self.model_inbox.itemFromIndex(index.siblingAtColumn(0))
+            if item:
+                fpath = item.data(Qt.UserRole + 1)
+                if fpath:  # 有 file_path 说明是文件项，不是分组头
+                    app_name = item.data(Qt.UserRole + 2) if item.data(Qt.UserRole + 2) else ""
+                    selected_files.append({'file_path': fpath, 'app_name': app_name})
+        
+        if not selected_files:
+            return QMessageBox.warning(self, "提示", "没有选中的文件。")
+        
+        # 提取可能的规则
+        candidate_rules = set()
+        for file_info in selected_files:
+            app_rules = RuleEngine.extract_rules_from_app_name(file_info['app_name'])
+            file_rules = RuleEngine.extract_rules_from_file_path(file_info['file_path'])
+            candidate_rules.update(app_rules)
+            candidate_rules.update(file_rules)
+        
+        # 创建对话框
+        dlg = QDialog(self)
+        dlg.setWindowTitle("智能提取规则 - 添加到项目")
+        dlg.setMinimumSize(900, 700)
+        
+        layout = QVBoxLayout(dlg)
+        
+        # 说明文字
+        info_label = QLabel("从选中的文件中智能提取规则，并添加到指定项目的自动分配规则中。")
+        info_label.setStyleSheet("color: #666; padding: 10px;")
+        layout.addWidget(info_label)
+        
+        # 规则类型选择
+        type_group = QGroupBox("规则类型")
+        type_layout = QHBoxLayout()
+        
+        type_layout.addWidget(QLabel("匹配方式："))
+        self.rule_type_combo = QComboBox()
+        self.rule_type_combo.addItems([
+            "文件名匹配 (关键词在文件名中)",
+            "应用名匹配 (关键词在程序名中)", 
+            "文件路径匹配 (关键词在完整路径中)",
+            "文件夹匹配 (匹配整个文件夹)",
+            "组合匹配 (同时匹配多个条件)"
+        ])
+        type_layout.addWidget(self.rule_type_combo)
+        type_group.setLayout(type_layout)
+        layout.addWidget(type_group)
+        
+        # 规则选择
+        rule_group = QGroupBox("候选规则（点击选择，可多选）")
+        rule_layout = QVBoxLayout()
+        
+        self.rule_list = QListWidget()
+        self.rule_list.setSelectionMode(QAbstractItemView.MultiSelection)
+        for rule in sorted(candidate_rules):
+            item = QListWidgetItem(rule)
+            self.rule_list.addItem(item)
+        rule_layout.addWidget(self.rule_list)
+        
+        # 自定义规则输入
+        custom_layout = QHBoxLayout()
+        custom_layout.addWidget(QLabel("或输入自定义规则："))
+        self.custom_rule_input = QLineEdit()
+        self.custom_rule_input.setPlaceholderText("输入自定义匹配关键词...")
+        custom_layout.addWidget(self.custom_rule_input)
+        rule_layout.addLayout(custom_layout)
+        
+        rule_group.setLayout(rule_layout)
+        layout.addWidget(rule_group)
+        
+        # 规则预览
+        preview_group = QGroupBox("规则预览 - 将匹配以下文件")
+        preview_layout = QVBoxLayout()
+        
+        self.preview_table = QTableWidget()
+        self.preview_table.setColumnCount(3)
+        self.preview_table.setHorizontalHeaderLabels(["文件路径", "应用名称", "最后使用时间"])
+        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        preview_layout.addWidget(self.preview_table)
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+        
+        # 目标项目选择
+        project_group = QGroupBox("添加到项目")
+        project_layout = QVBoxLayout()
+        
+        self.project_combo = QComboBox()
+        # 添加项目/子项目层级
+        show_archived = self.chk_archived.isChecked()
+        projects_data = get_projects_with_subprojects(show_archived)
+        for project_key, project_name in projects_data:
+            if project_key != '未分配':
+                # 正确解析 project_id：对于 'project_1.sub_1' 这样的格式，只取第一部分
+                project_id = int(project_key.split('.')[0].replace('project_', ''))
+                self.project_combo.addItem(project_name, project_id)
+        project_layout.addWidget(self.project_combo)
+        project_group.setLayout(project_layout)
+        layout.addWidget(project_group)
+        
+        # 按钮
+        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addWidget(btn_box)
+        
+        # 连接信号
+        self.rule_list.itemSelectionChanged.connect(self.update_preview_for_project_map)
+        self.rule_type_combo.currentIndexChanged.connect(self.update_preview_for_project_map)
+        self.custom_rule_input.textChanged.connect(self.update_preview_for_project_map)
+        
+        # 初始化预览
+        if self.rule_list.count() > 0:
+            self.rule_list.setCurrentRow(0)
+            self.update_preview_for_project_map()
+        
+        if dlg.exec() == QDialog.Accepted:
+            # 获取选中的规则
+            selected_items = self.rule_list.selectedItems()
+            custom_rule = self.custom_rule_input.text().strip()
+            
+            rules_to_add = []
+            
+            # 添加选中的规则
+            for item in selected_items:
+                rules_to_add.append(item.text())
+            
+            # 添加自定义规则
+            if custom_rule:
+                rules_to_add.append(custom_rule)
+            
+            if not rules_to_add:
+                return QMessageBox.warning(self, "提示", "请选择或输入至少一个规则。")
+            
+            project_id = self.project_combo.currentData()
+            project_name = self.project_combo.currentText()
+            rule_type_index = self.rule_type_combo.currentIndex()
+            
+            # 根据规则类型添加前缀
+            type_prefixes = ["", "app:", "path:", "folder:", "combo:"]
+            type_prefix = type_prefixes[rule_type_index]
+            
+            # 保存规则到 project_map 表
+            conn = get_connection()
+            added_count = 0
+            for rule_pattern in rules_to_add:
+                # 添加类型前缀（文件名匹配不需要前缀，保持兼容性）
+                full_rule = f"{type_prefix}{rule_pattern}" if type_prefix else rule_pattern
+                
+                # 检查规则是否已存在
+                existing = conn.execute(
+                    "SELECT id FROM project_map WHERE project_id = ? AND rule_path = ?",
+                    (project_id, full_rule)
+                ).fetchone()
+                
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO project_map (project_id, project_name, rule_path) VALUES (?, ?, ?)",
+                        (project_id, project_name, full_rule)
+                    )
+                    added_count += 1
+            
+            conn.commit()
+            conn.close()
+            
+            QMessageBox.information(self, "完成", 
+                f"已添加 {added_count} 条规则到项目 '{project_name}' 的自动分配规则中。\n\n"
+                f"匹配这些规则的文件将自动分配到该项目。")
+            self.refresh_data()
+    
+    # 【新增】更新规则预览（用于 project_map 规则）
+    def update_preview_for_project_map(self):
+        """更新规则预览 - 用于项目自动分配规则"""
+        # 清空预览表
+        self.preview_table.setRowCount(0)
+        
+        # 获取选中的规则
+        selected_items = self.rule_list.selectedItems()
+        custom_rule = self.custom_rule_input.text().strip() if hasattr(self, 'custom_rule_input') else ""
+        
+        # 收集所有规则
+        rules = []
+        for item in selected_items:
+            rules.append(item.text())
+        if custom_rule:
+            rules.append(custom_rule)
+        
+        if not rules:
+            return
+        
+        # 获取规则类型
+        rule_type_index = self.rule_type_combo.currentIndex() if hasattr(self, 'rule_type_combo') else 0
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 根据规则类型构建查询
+        for rule_pattern in rules[:3]:  # 只预览前3个规则
+            if rule_type_index == 0:  # 文件名匹配
+                cursor.execute("""
+                    SELECT DISTINCT file_path, app_name, MAX(timestamp) as last_seen
+                    FROM activity_log
+                    WHERE file_path LIKE ?
+                    GROUP BY file_path, app_name
+                    ORDER BY last_seen DESC
+                    LIMIT 5
+                """, (f"%{rule_pattern}%",))
+            elif rule_type_index == 1:  # 应用名匹配
+                cursor.execute("""
+                    SELECT DISTINCT file_path, app_name, MAX(timestamp) as last_seen
+                    FROM activity_log
+                    WHERE app_name LIKE ?
+                    GROUP BY file_path, app_name
+                    ORDER BY last_seen DESC
+                    LIMIT 5
+                """, (f"%{rule_pattern}%",))
+            elif rule_type_index == 2:  # 文件路径匹配
+                cursor.execute("""
+                    SELECT DISTINCT file_path, app_name, MAX(timestamp) as last_seen
+                    FROM activity_log
+                    WHERE file_path LIKE ? OR app_name LIKE ?
+                    GROUP BY file_path, app_name
+                    ORDER BY last_seen DESC
+                    LIMIT 5
+                """, (f"%{rule_pattern}%", f"%{rule_pattern}%"))
+            elif rule_type_index == 3:  # 文件夹匹配
+                cursor.execute("""
+                    SELECT DISTINCT file_path, app_name, MAX(timestamp) as last_seen
+                    FROM activity_log
+                    WHERE file_path LIKE ?
+                    GROUP BY file_path, app_name
+                    ORDER BY last_seen DESC
+                    LIMIT 5
+                """, (f"%{rule_pattern}%",))
+            else:  # 组合匹配
+                cursor.execute("""
+                    SELECT DISTINCT file_path, app_name, MAX(timestamp) as last_seen
+                    FROM activity_log
+                    WHERE file_path LIKE ? OR app_name LIKE ?
+                    GROUP BY file_path, app_name
+                    ORDER BY last_seen DESC
+                    LIMIT 5
+                """, (f"%{rule_pattern}%", f"%{rule_pattern}%"))
+            
+            rows = cursor.fetchall()
+            
+            # 填充预览表
+            for row_data in rows:
+                file_path, app_name, last_seen = row_data
+                # 检查是否已存在
+                exists = False
+                for i in range(self.preview_table.rowCount()):
+                    if self.preview_table.item(i, 0).text() == file_path:
+                        exists = True
+                        break
+                
+                if not exists:
+                    row = self.preview_table.rowCount()
+                    self.preview_table.insertRow(row)
+                    
+                    self.preview_table.setItem(row, 0, QTableWidgetItem(file_path))
+                    self.preview_table.setItem(row, 1, QTableWidgetItem(app_name))
+                    
+                    # 格式化时间
+                    try:
+                        time_str = datetime.fromisoformat(last_seen.split('.')[0]).strftime("%Y-%m-%d %H:%M:%S")
+                    except:
+                        time_str = last_seen
+                    self.preview_table.setItem(row, 2, QTableWidgetItem(time_str))
+        
+        conn.close()
+    
+    # 【新增】更新规则预览（旧方法，保留用于其他功能）
+    def update_preview(self):
+        from core import RuleEngine
+        
+        # 清空预览表
+        self.preview_table.setRowCount(0)
+        
+        # 获取选中的规则
+        selected_items = self.rule_list.selectedItems()
+        if not selected_items:
+            return
+        
+        rule_pattern = selected_items[0].text()
+        
+        # 从数据库获取匹配的文件（简单的路径匹配）
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT DISTINCT file_path, app_name, MAX(timestamp) as last_seen
+            FROM activity_log
+            WHERE file_path LIKE ? OR app_name LIKE ?
+            GROUP BY file_path, app_name
+            ORDER BY last_seen DESC
+            LIMIT 10
+        """, (f"%{rule_pattern}%", f"%{rule_pattern}%"))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        # 填充预览表
+        for row_data in rows:
+            file_path, app_name, last_seen = row_data
+            row = self.preview_table.rowCount()
+            self.preview_table.insertRow(row)
+            
+            self.preview_table.setItem(row, 0, QTableWidgetItem(file_path))
+            self.preview_table.setItem(row, 1, QTableWidgetItem(app_name))
+            
+            # 格式化时间
+            try:
+                time_str = datetime.fromisoformat(last_seen.split('.')[0]).strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                time_str = last_seen
+            self.preview_table.setItem(row, 2, QTableWidgetItem(time_str))
     
     # 【新增】批量忽略某程序的所有文件
     def action_ignore_app(self, app_name):
@@ -4223,7 +4943,92 @@ class DashboardV2(QMainWindow):
             # 更新托盘菜单文本
             if hasattr(self, 'system_tray'):
                 self.system_tray.update_menu_texts()
-    
+
+    def dragEnterEvent(self, event):
+        """处理拖拽进入事件"""
+        if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        """处理拖拽移动事件"""
+        if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        """处理拖拽放置事件"""
+        if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
+            # 获取被拖拽的项目
+            # 在Qt中，当拖拽时，currentIndex()应该是被拖拽的项目
+            source_index = self.tree_projects.currentIndex()
+            if not source_index.isValid():
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "调试", "源索引无效")
+                return
+            
+            # 获取源项目的ID
+            source_item = self.model_projects.itemFromIndex(source_index)
+            source_id = source_item.data(Qt.UserRole + 1)
+            source_name = source_item.text()
+            if not source_id:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "调试", f"源项目ID无效: {source_name}")
+                return
+            
+            # 获取目标项目
+            target_index = self.tree_projects.indexAt(event.pos())
+            target_id = None
+            target_name = "根节点"
+            
+            if target_index.isValid():
+                # 获取目标项目的ID
+                target_item = self.model_projects.itemFromIndex(target_index)
+                target_id = target_item.data(Qt.UserRole + 1)
+                target_name = target_item.text()
+                
+                # 如果目标是文件，获取其父项目的ID
+                if not target_id:
+                    parent_item = target_item.parent()
+                    if parent_item:
+                        target_id = parent_item.data(Qt.UserRole + 1)
+                        target_name = f"{parent_item.text()} (文件: {target_name})"
+                    else:
+                        from PySide6.QtWidgets import QMessageBox
+                        QMessageBox.information(self, "调试", f"目标文件没有父项目: {target_name}")
+                        return
+            
+            # 防止循环依赖
+            if source_id == target_id:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "调试", "源项目和目标项目相同，取消操作")
+                return
+            
+            # 调用move_project函数
+            from core.project_tree import move_project
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "调试", f"准备移动项目: {source_name} (ID: {source_id}) 到 {target_name} (ID: {target_id})")
+            
+            success = move_project(source_id, target_id)
+            
+            if success:
+                QMessageBox.information(self, "调试", "项目移动成功，正在刷新项目树...")
+                # 强制刷新项目树，不依赖哈希检查
+                self.save_tree_state()
+                self.model_projects.removeRows(0, self.model_projects.rowCount())
+                
+                show_archived = self.chk_archived.isChecked()
+                tree = load_project_tree()
+                for root in tree.get_root_nodes():
+                    if not root.is_archived or show_archived:
+                        self._build_project_tree_recursive(root, self.model_projects.invisibleRootItem(), show_archived)
+                        
+                self.restore_tree_state()
+                self.last_tree_hash = None  # 重置哈希值，确保下次刷新时重新计算
+                QMessageBox.information(self, "调试", "项目树刷新完成")
+            else:
+                QMessageBox.information(self, "调试", "项目移动失败")
+            
+            event.acceptProposedAction()
+
     def changeEvent(self, event):
         """处理窗口状态变化（最小化等）"""
         if event.type() == event.Type.WindowStateChange:
@@ -4248,6 +5053,84 @@ class DashboardV2(QMainWindow):
         if sys.platform == 'darwin':
             self._update_macos_dock_visibility()
         super().showEvent(event)
+
+    def action_export_projects(self):
+        """导出项目和规则"""
+        from PySide6.QtWidgets import QFileDialog
+        from core.export import export_projects_and_rules
+        from datetime import datetime
+        
+        # 打开文件选择对话框
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出项目和规则",
+            f"projects_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            result = export_projects_and_rules(file_path)
+            if result['success']:
+                QMessageBox.information(
+                    self,
+                    "导出成功",
+                    f"成功导出 {result['project_count']} 个项目和 {result['rule_count']} 条规则到\n{result['file_path']}"
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "导出失败",
+                    f"导出失败：{result.get('error', '未知错误')}"
+                )
+
+    def action_import_projects(self):
+        """导入项目和规则"""
+        from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+        from core.export import import_projects_and_rules
+        
+        # 打开文件选择对话框
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入项目和规则",
+            "",
+            "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            # 选择冲突处理策略
+            strategies = ["跳过 (保留现有)", "覆盖 (替换现有)", "重命名 (创建新副本)"]
+            strategy_map = {
+                "跳过 (保留现有)": "skip",
+                "覆盖 (替换现有)": "overwrite",
+                "重命名 (创建新副本)": "rename"
+            }
+            
+            strategy, ok = QInputDialog.getItem(
+                self,
+                "选择冲突处理策略",
+                "当项目名称冲突时：",
+                strategies,
+                0,
+                False
+            )
+            
+            if ok:
+                result = import_projects_and_rules(file_path, strategy_map[strategy])
+                if result['success']:
+                    QMessageBox.information(
+                        self,
+                        "导入成功",
+                        f"成功导入 {result['imported_projects']} 个项目和 {result['imported_rules']} 条规则\n" 
+                        f"跳过了 {result['skipped_projects']} 个已存在的项目"
+                    )
+                    # 刷新项目树
+                    self.refresh_data()
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "导入失败",
+                        f"导入失败：{result.get('error', '未知错误')}"
+                    )
 
 
 # ============================================================================

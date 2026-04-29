@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 数据导出功能
-支持导出为 CSV、Excel 格式
+支持导出为 CSV、Excel 格式，以及项目和规则的 JSON 导入导出
 """
 
 import csv
 import os
+import json
 from datetime import datetime
 
 
@@ -259,4 +260,206 @@ def export_summary_report(start_date, end_date, output_path):
         
     except Exception as e:
         print(f"❌ 导出失败：{e}")
+        return {'success': False, 'error': str(e)}
+
+
+def export_projects_and_rules(output_path):
+    """
+    导出项目和规则为 JSON 文件
+    
+    Args:
+        output_path: 输出文件路径
+    
+    Returns:
+        dict: {'success': bool, 'file_path': str, 'project_count': int, 'rule_count': int}
+    """
+    from core.database import get_connection
+    from core.project_tree import load_project_tree
+    
+    try:
+        # 加载项目树
+        tree = load_project_tree()
+        projects = []
+        
+        # 遍历所有项目
+        for node in tree.get_all_nodes(include_archived=True):
+            project_data = {
+                'id': node.id,
+                'name': node.name,
+                'parent_id': node.parent_id,
+                'is_archived': node.is_archived
+            }
+            projects.append(project_data)
+        
+        # 获取规则
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT project_id, rule_path FROM project_map")
+        rules = []
+        for row in cursor.fetchall():
+            rule_data = {
+                'project_id': row[0],
+                'rule': row[1]
+            }
+            rules.append(rule_data)
+        conn.close()
+        
+        # 构建导出数据
+        export_data = {
+            'version': '1.0',
+            'export_date': datetime.now().isoformat(),
+            'projects': projects,
+            'rules': rules
+        }
+        
+        # 写入 JSON 文件
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"✅ 成功导出 {len(projects)} 个项目和 {len(rules)} 条规则到 {output_path}")
+        return {
+            'success': True,
+            'file_path': output_path,
+            'project_count': len(projects),
+            'rule_count': len(rules)
+        }
+        
+    except Exception as e:
+        print(f"❌ 导出失败：{e}")
+        return {'success': False, 'error': str(e)}
+
+
+def import_projects_and_rules(input_path, conflict_strategy='skip'):
+    """
+    从 JSON 文件导入项目和规则
+    
+    Args:
+        input_path: 输入文件路径
+        conflict_strategy: 冲突处理策略，可选 'skip'（跳过）、'overwrite'（覆盖）、'rename'（重命名）
+    
+    Returns:
+        dict: {'success': bool, 'imported_projects': int, 'imported_rules': int, 'skipped_projects': int}
+    """
+    from core.database import get_connection
+    from core.project_tree import create_project, move_project
+    
+    try:
+        # 读取 JSON 文件
+        with open(input_path, 'r', encoding='utf-8') as f:
+            import_data = json.load(f)
+        
+        # 检查版本
+        if import_data.get('version') != '1.0':
+            return {'success': False, 'error': '不支持的文件版本'}
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 记录导入统计
+        imported_projects = 0
+        imported_rules = 0
+        skipped_projects = 0
+        
+        # 导入项目
+        project_mapping = {}  # 旧 ID 到新 ID 的映射
+        
+        for project in import_data.get('projects', []):
+            old_id = project['id']
+            name = project['name']
+            parent_id = project['parent_id']
+            is_archived = project['is_archived']
+            
+            # 检查是否已存在同名项目
+            cursor.execute(
+                "SELECT id FROM projects WHERE project_name = ? AND parent_id = ?",
+                (name, parent_id if parent_id is not None else None)
+            )
+            existing = cursor.fetchone()
+            
+            if existing:
+                if conflict_strategy == 'skip':
+                    skipped_projects += 1
+                    continue
+                elif conflict_strategy == 'overwrite':
+                    # 覆盖现有项目
+                    project_id = existing[0]
+                elif conflict_strategy == 'rename':
+                    # 重命名新项目
+                    counter = 1
+                    new_name = f"{name} ({counter})"
+                    while True:
+                        cursor.execute(
+                            "SELECT id FROM projects WHERE project_name = ? AND parent_id = ?",
+                            (new_name, parent_id if parent_id is not None else None)
+                        )
+                        if not cursor.fetchone():
+                            name = new_name
+                            break
+                        counter += 1
+                    # 创建新项目
+                    new_project_id = create_project(name, parent_id)
+                    if new_project_id:
+                        project_id = new_project_id
+                        imported_projects += 1
+                    else:
+                        skipped_projects += 1
+                        continue
+            else:
+                # 创建新项目
+                new_project_id = create_project(name, parent_id)
+                if new_project_id:
+                    project_id = new_project_id
+                    imported_projects += 1
+                else:
+                    skipped_projects += 1
+                    continue
+            
+            # 记录 ID 映射
+            project_mapping[old_id] = project_id
+            
+            # 处理归档状态
+            if is_archived:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO project_archive (project_id, archived_at) VALUES (?, ?)",
+                    (project_id, datetime.now().isoformat())
+                )
+        
+        # 导入规则
+        for rule in import_data.get('rules', []):
+            old_project_id = rule['project_id']
+            rule_path = rule['rule']
+            
+            # 使用映射后的项目 ID
+            if old_project_id in project_mapping:
+                new_project_id = project_mapping[old_project_id]
+                
+                # 检查规则是否已存在
+                cursor.execute(
+                    "SELECT id FROM project_map WHERE project_id = ? AND rule_path = ?",
+                    (new_project_id, rule_path)
+                )
+                if not cursor.fetchone():
+                    cursor.execute(
+                        "INSERT INTO project_map (project_id, rule_path) VALUES (?, ?)",
+                        (new_project_id, rule_path)
+                    )
+                    imported_rules += 1
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✅ 成功导入 {imported_projects} 个项目和 {imported_rules} 条规则")
+        print(f"跳过了 {skipped_projects} 个已存在的项目")
+        
+        return {
+            'success': True,
+            'imported_projects': imported_projects,
+            'imported_rules': imported_rules,
+            'skipped_projects': skipped_projects
+        }
+        
+    except Exception as e:
+        print(f"❌ 导入失败：{e}")
+        import traceback
+        traceback.print_exc()
         return {'success': False, 'error': str(e)}

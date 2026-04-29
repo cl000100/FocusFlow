@@ -180,6 +180,17 @@ def init_db():
          timestamp DATETIME,
          archived_at DATETIME,
          action TEXT)''')  # action: 'deleted' 或 'merged'
+    
+    # 10. 智能提取规则表
+    cursor.execute('''CREATE TABLE IF NOT EXISTS extraction_rules
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+         rule_name TEXT,
+         rule_type TEXT,
+         match_pattern TEXT,
+         project_id INTEGER,
+         priority INTEGER DEFAULT 0,
+         created_at DATETIME,
+         FOREIGN KEY (project_id) REFERENCES projects(id))''')
 
     # 初始化默认配置 (如果不存在的话)
     cursor.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('idle_threshold', '30')")
@@ -201,6 +212,12 @@ def init_db():
     # 4. 复合索引 - 优化同时使用时间和路径的查询
     cursor.execute('''CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp_path 
                       ON activity_log(timestamp, file_path)''')
+    
+    # 5. 规则表索引
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_extraction_rules_project 
+                      ON extraction_rules(project_id)''')
+    cursor.execute('''CREATE INDEX IF NOT EXISTS idx_extraction_rules_type 
+                      ON extraction_rules(rule_type)''')
     
     conn.commit()
     conn.close()
@@ -1280,14 +1297,18 @@ def get_unique_projects():
     return projects
 
 
-def get_projects_with_subprojects():
+def get_projects_with_subprojects(show_archived=False):
     """
     获取项目/子项目层级结构
+    
+    Args:
+        show_archived: 是否显示已归档的项目
     
     Returns:
         list of tuples: [
             ('project_1', '项目 1'),  # 父项目
             ('project_1.sub_1', '  ├─ 子项目 1'),  # 子项目
+            ('project_1.sub_1.sub_1', '    ├─ 孙子项目 1'),  # 孙子项目
             ('project_1.sub_2', '  ├─ 子项目 2'),
             ('project_2', '项目 2'),
             ('未分配', '未分配'),
@@ -1296,11 +1317,13 @@ def get_projects_with_subprojects():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # 查询所有项目，包括 parent_id
+    # 查询所有项目，包括 parent_id 和归档状态
     cursor.execute("""
-        SELECT id, project_name, parent_id 
-        FROM projects 
-        ORDER BY parent_id, project_name ASC
+        SELECT p.id, p.project_name, p.parent_id, 
+               CASE WHEN pa.project_id IS NOT NULL THEN 1 ELSE 0 END as is_archived
+        FROM projects p
+        LEFT JOIN project_archive pa ON p.id = pa.project_id
+        ORDER BY p.parent_id, p.project_name ASC
     """)
     rows = cursor.fetchall()
     
@@ -1308,46 +1331,55 @@ def get_projects_with_subprojects():
     
     # 构建项目树
     projects_dict = {}
+    
+    # 首先创建所有项目条目
     for row in rows:
-        project_id, project_name, parent_id = row
-        if project_id not in projects_dict:
-            projects_dict[project_id] = {
-                'name': project_name,
-                'parent_id': parent_id,
-                'children': []
-            }
-        
-        if parent_id is not None:
+        project_id, project_name, parent_id, is_archived = row
+        # 如果不显示已归档的项目，并且项目已归档，则跳过
+        if not show_archived and is_archived:
+            continue
+        projects_dict[project_id] = {
+            'name': project_name,
+            'parent_id': parent_id,
+            'is_archived': is_archived,
+            'children': []
+        }
+    
+    # 然后添加子项目到父项目的 children 列表中
+    for project_id, project_data in projects_dict.items():
+        parent_id = project_data['parent_id']
+        if parent_id is not None and parent_id in projects_dict:
             # 这是子项目，添加到父项目的 children 中
-            if parent_id in projects_dict:
-                projects_dict[parent_id]['children'].append(project_id)
-            else:
-                projects_dict[parent_id] = {'name': '', 'parent_id': None, 'children': [project_id]}
+            projects_dict[parent_id]['children'].append(project_id)
     
     # 收集结果
     result = []
+    
+    # 递归添加项目和子项目
+    def add_projects_recursive(project_id, indent=""):
+        project_data = projects_dict.get(project_id)
+        if not project_data or not project_data['name']:
+            return
+        
+        # 添加当前项目
+        result.append((f"project_{project_id}", f"{indent}{project_data['name']}"))
+        
+        # 按名称排序子项目
+        children_ids = project_data['children']
+        if children_ids:
+            children = [(cid, projects_dict[cid]['name']) for cid in children_ids if cid in projects_dict]
+            children.sort(key=lambda x: x[1])
+            
+            # 递归添加子项目
+            for child_id, child_name in children:
+                add_projects_recursive(child_id, f"{indent}  ├─ ")
     
     # 先添加父项目
     parent_projects = [(pid, pdata) for pid, pdata in projects_dict.items() if pdata['parent_id'] is None]
     parent_projects.sort(key=lambda x: x[1]['name'])
     
     for project_id, project_data in parent_projects:
-        project_name = project_data['name']
-        if not project_name:  # 跳过空名称
-            continue
-        
-        # 添加父项目
-        result.append((f"project_{project_id}", project_name))
-        
-        # 添加子项目
-        children_ids = project_data['children']
-        if children_ids:
-            # 按名称排序子项目
-            children = [(cid, projects_dict[cid]['name']) for cid in children_ids if cid in projects_dict]
-            children.sort(key=lambda x: x[1])
-            
-            for child_id, child_name in children:
-                result.append((f"project_{child_id}", f"  ├─ {child_name}"))
+        add_projects_recursive(project_id)
     
     # 添加"未分配"选项
     result.append(('未分配', '未分配'))

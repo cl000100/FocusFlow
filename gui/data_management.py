@@ -26,7 +26,8 @@ from core.database import (
     query_activity_log, table_exists, get_archive_table_name,
     delete_data_by_range, delete_data_by_app, delete_data_by_file,
     delete_archive_table, vacuum_database, get_storage_stats,
-    backup_database, restore_database, list_backups, get_connection
+    backup_database, restore_database, list_backups, get_connection,
+    get_db_path, set_db_path, init_db
 )
 from core.export import export_to_csv, export_to_excel, export_summary_report
 
@@ -67,6 +68,10 @@ class DataManagementDialog(QDialog):
         # 选项卡 4：备份/恢复
         self.tab_backup = self.create_backup_tab()
         self.tabs.addTab(self.tab_backup, "备份/恢复")
+        
+        # 选项卡 5：数据库设置
+        self.tab_db_settings = self.create_db_settings_tab()
+        self.tabs.addTab(self.tab_db_settings, "数据库设置")
         
         layout.addWidget(self.tabs)
         
@@ -334,6 +339,61 @@ class DataManagementDialog(QDialog):
         widget.setLayout(layout)
         return widget
     
+    def create_db_settings_tab(self):
+        """创建数据库设置选项卡"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # 1. 当前数据库路径
+        path_group = QGroupBox("当前数据库路径")
+        path_layout = QVBoxLayout()
+        
+        self.lbl_db_path = QLabel("- 加载中 -")
+        self.lbl_db_path.setWordWrap(True)
+        path_layout.addWidget(self.lbl_db_path)
+        
+        self.btn_refresh_path = QPushButton("刷新路径")
+        self.btn_refresh_path.clicked.connect(self.refresh_db_path)
+        path_layout.addWidget(self.btn_refresh_path)
+        
+        path_group.setLayout(path_layout)
+        layout.addWidget(path_group)
+        
+        # 2. 更改数据库路径
+        change_group = QGroupBox("更改数据库路径")
+        change_layout = QVBoxLayout()
+        
+        change_hint = QLabel("选择一个文件夹作为新的数据库存储位置，系统会在该文件夹中创建 data 目录和 tracker.db 文件")
+        change_hint.setWordWrap(True)
+        change_layout.addWidget(change_hint)
+        
+        self.btn_change_path = QPushButton("选择新的数据库文件夹")
+        self.btn_change_path.clicked.connect(self.change_db_path)
+        change_layout.addWidget(self.btn_change_path)
+        
+        change_group.setLayout(change_layout)
+        layout.addWidget(change_group)
+        
+        # 3. 恢复出厂设置
+        reset_group = QGroupBox("恢复出厂设置")
+        reset_layout = QVBoxLayout()
+        
+        reset_hint = QLabel("此操作会初始化数据库，删除所有现有数据。请确保已备份重要数据！")
+        reset_hint.setWordWrap(True)
+        reset_hint.setStyleSheet("color: #FF4444;")
+        reset_layout.addWidget(reset_hint)
+        
+        self.btn_reset_factory = QPushButton("恢复出厂设置")
+        self.btn_reset_factory.clicked.connect(self.reset_factory_settings)
+        self.btn_reset_factory.setStyleSheet("background-color: #FFDDDD;")
+        reset_layout.addWidget(self.btn_reset_factory)
+        
+        reset_group.setLayout(reset_layout)
+        layout.addWidget(reset_group)
+        
+        widget.setLayout(layout)
+        return widget
+    
     def refresh_data(self):
         """刷新所有数据"""
         # 1. 刷新主表统计
@@ -378,6 +438,9 @@ class DataManagementDialog(QDialog):
         
         # 5. 刷新备份列表
         self.refresh_backups()
+        
+        # 6. 刷新数据库路径
+        self.refresh_db_path()
     
     def refresh_app_list(self):
         """刷新应用列表"""
@@ -610,6 +673,76 @@ class DataManagementDialog(QDialog):
                 QMessageBox.information(self, "恢复成功", result['message'])
             else:
                 QMessageBox.critical(self, "恢复失败", result['message'])
+    
+    def refresh_db_path(self):
+        """刷新当前数据库路径"""
+        db_path = get_db_path()
+        self.lbl_db_path.setText(f"当前数据库路径：\n{db_path}")
+    
+    def change_db_path(self):
+        """更改数据库路径"""
+        # 选择文件夹
+        folder_path = QFileDialog.getExistingDirectory(self, "选择新的数据库文件夹")
+        if not folder_path:
+            return
+        
+        # 构建新的数据库路径
+        new_db_path = os.path.join(folder_path, "data", "tracker.db")
+        
+        # 确认更改
+        reply = QMessageBox.question(
+            self, "确认更改",
+            f"确定要将数据库路径更改为：\n{new_db_path}\n\n系统会在该文件夹中创建必要的目录结构。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                # 保存新路径
+                set_db_path(new_db_path)
+                
+                # 确保目录存在
+                db_dir = os.path.dirname(new_db_path)
+                os.makedirs(db_dir, exist_ok=True)
+                
+                # 初始化数据库
+                init_db()
+                
+                QMessageBox.information(
+                    self, "更改成功",
+                    f"数据库路径已更改为：\n{new_db_path}\n\n请重启应用程序使更改生效。"
+                )
+                self.refresh_db_path()
+            except Exception as e:
+                QMessageBox.critical(self, "更改失败", f"更改数据库路径失败：{e}")
+    
+    def reset_factory_settings(self):
+        """恢复出厂设置"""
+        # 确认操作
+        reply = QMessageBox.question(
+            self, "确认恢复",
+            "此操作会初始化数据库，删除所有现有数据。\n\n请确保已备份重要数据！\n\n确定要继续吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                # 获取当前数据库路径
+                db_path = get_db_path()
+                
+                # 删除现有数据库文件
+                if os.path.exists(db_path):
+                    os.remove(db_path)
+                
+                # 初始化数据库
+                init_db()
+                
+                QMessageBox.information(
+                    self, "恢复成功",
+                    "出厂设置已恢复，数据库已初始化。\n\n请重启应用程序使更改生效。"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "恢复失败", f"恢复出厂设置失败：{e}")
 
 
 if __name__ == "__main__":

@@ -50,7 +50,9 @@ class ProjectNode:
         return len(self.get_ancestors())
     
     def is_leaf(self) -> bool:
-        return len(self._children) == 0
+        # 只考虑未被归档的子项目
+        active_children = [child for child in self._children if not child.is_archived]
+        return len(active_children) == 0
     
     def get_path(self) -> str:
         ancestors = self.get_ancestors()
@@ -196,18 +198,41 @@ def load_project_tree() -> ProjectTree:
     return tree
 
 def create_project(name: str, parent_id: Optional[int] = None) -> Optional[int]:
+    print(f"[调试] create_project: name={name}, parent_id={parent_id}")
     conn = get_connection()
     cursor = conn.cursor()
     
     try:
+        # 检查在同一个父目录下是否有同名的项目
+        if parent_id is None:
+            # 如果 parent_id 是 None，使用 IS NULL
+            cursor.execute(
+                "SELECT id FROM projects WHERE project_name = ? AND parent_id IS NULL",
+                (name,)
+            )
+        else:
+            # 如果 parent_id 不是 None，使用 = ?
+            cursor.execute(
+                "SELECT id FROM projects WHERE project_name = ? AND parent_id = ?",
+                (name, parent_id)
+            )
+        existing_project = cursor.fetchone()
+        print(f"[调试] 检查同名项目: existing_project={existing_project}")
+        if existing_project:
+            print(f"[调试] 项目名称已存在，返回 None")
+            return None
+        
+        # 如果没有同名项目，创建新项目
         cursor.execute(
             "INSERT INTO projects (project_name, parent_id, created_at) VALUES (?, ?, ?)",
             (name, parent_id, datetime.now().isoformat())
         )
         conn.commit()
         project_id = cursor.lastrowid
+        print(f"[调试] 创建项目成功，project_id={project_id}")
         return project_id
-    except sqlite3.IntegrityError:
+    except sqlite3.IntegrityError as e:
+        print(f"[调试] 数据库错误: {e}")
         return None
     finally:
         conn.close()
