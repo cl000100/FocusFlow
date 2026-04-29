@@ -249,12 +249,14 @@ def delete_project(project_id: int, delete_children: bool = False) -> bool:
     
     if delete_children:
         cursor.execute("DELETE FROM projects WHERE id = ? OR parent_id = ?", (project_id, project_id))
+        cursor.execute("DELETE FROM file_assignment WHERE project_id = ?", (project_id,))
     else:
         children = tree.get_node(project_id).get_children() if tree.get_node(project_id) else []
         if children:
             return False
         cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    
+        cursor.execute("DELETE FROM file_assignment WHERE project_id = ?", (project_id,))
+
     conn.commit()
     conn.close()
     return True

@@ -20,10 +20,10 @@ if PROJECT_ROOT not in sys.path:
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QSplitter, QTreeView, QHeaderView, QLabel, QPushButton, QMenu,
-    QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox, 
+    QSplitter, QTreeView, QTreeWidget, QHeaderView, QLabel, QPushButton, QMenu,
+    QAbstractItemView, QDialog, QComboBox, QDialogButtonBox, QMessageBox,
     QInputDialog, QSpinBox, QFormLayout, QGroupBox, QCheckBox, QListWidget, QListWidgetItem,QFileDialog, QFrame, QSizePolicy, QScrollArea,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QDateEdit, QLineEdit
+    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QDateEdit, QLineEdit, QButtonGroup, QRadioButton, QTreeWidgetItem
 )
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont, QPainter, QColor, QPen, QBrush, QIcon, QAction, QPixmap
 from PySide6.QtCore import Qt, QModelIndex, QTimer, QItemSelectionModel
@@ -508,50 +508,381 @@ class BlacklistDialog(QDialog):
             conn.close()
             self.load_data()
 
-class ProjectRulesDialog(QDialog):
-    def __init__(self, project_id, project_name, parent=None):
+class InboxOrganizerDialog(QDialog):
+    """Inbox 整理对话框 - 简单快速地把文件分配到项目"""
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.project_id = project_id
-        self.setWindowTitle(f"编辑规则 - {project_name}")
-        self.setMinimumSize(400, 300)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("当路径/窗口名包含以下关键词时，自动分配到本项目："))
-        self.list_widget = QListWidget()
-        layout.addWidget(self.list_widget)
+        self.setWindowTitle("Inbox 整理")
+        self.setMinimumSize(850, 650)
+
+        # 获取 inbox 选中的文件
+        self.selected_files = []
+        self.fetch_inbox_selection()
+
+        main_layout = QVBoxLayout(self)
+
+        # ===== 顶部：项目选择 + 已选数量 =====
+        top_row_layout = QHBoxLayout()
+        top_row_layout.addWidget(QLabel("分配到:"))
+
+        self.project_combo = QComboBox()
+        self.project_combo.setMinimumWidth(200)
+        self.load_projects()
+        self.project_combo.currentIndexChanged.connect(self.on_project_changed)
+        top_row_layout.addWidget(self.project_combo)
+
+        btn_new_project = QPushButton("➕ 新建项目")
+        btn_new_project.clicked.connect(self.create_new_project)
+        top_row_layout.addWidget(btn_new_project)
+
+        self.selected_count_label = QLabel("已选 0 个文件")
+        top_row_layout.addWidget(self.selected_count_label)
+        top_row_layout.addStretch()
+
+        main_layout.addLayout(top_row_layout)
+
+        # ===== 筛选框 =====
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("🔍 筛选:"))
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("输入关键词筛选...")
+        self.filter_input.textChanged.connect(self.on_filter_changed)
+        filter_layout.addWidget(self.filter_input)
+        main_layout.addLayout(filter_layout)
+
+        # ===== 分组模式 =====
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("分组方式:"))
+        self.btn_by_folder = QRadioButton("按文件夹")
+        self.btn_by_folder.setChecked(True)
+        self.btn_by_app = QRadioButton("按应用")
+        self.btn_by_name = QRadioButton("按文件名")
+        mode_layout.addWidget(self.btn_by_folder)
+        mode_layout.addWidget(self.btn_by_app)
+        mode_layout.addWidget(self.btn_by_name)
+        mode_layout.addStretch()
+        main_layout.addLayout(mode_layout)
+
+        # 连接模式切换信号
+        self.btn_by_folder.toggled.connect(lambda: self.load_groups() if self.btn_by_folder.isChecked() else None)
+        self.btn_by_app.toggled.connect(lambda: self.load_groups() if self.btn_by_app.isChecked() else None)
+        self.btn_by_name.toggled.connect(lambda: self.load_groups() if self.btn_by_name.isChecked() else None)
+
+        # ===== 分组列表（可展开的树形） =====
+        self.group_tree = QTreeWidget()
+        self.group_tree.setHeaderLabels(["", "文件列表", ""])
+        self.group_tree.setColumnWidth(0, 100)
+        self.group_tree.setColumnWidth(1, 500)
+        self.group_tree.setColumnWidth(2, 120)
+        self.group_tree.itemChanged.connect(self.on_item_changed)
+        self.group_tree.itemExpanded.connect(self.on_item_expanded)
+        self.group_tree.setStyleSheet("""
+            QWidget {
+                background-color: #2b2b2b;
+                color: #e0e0e0;
+            }
+            QTreeWidget::item:has-children {
+                font-weight: bold;
+                background-color: #3c3c3c;
+            }
+            QTreeWidget::item {
+                padding: 2px;
+            }
+            QTreeWidget::item:selected {
+                background-color: #0d47a1;
+            }
+            QCheckBox {
+                color: #e0e0e0;
+            }
+            QRadioButton {
+                color: #e0e0e0;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+            QGroupBox {
+                color: #e0e0e0;
+            }
+        """)
+        main_layout.addWidget(self.group_tree)
+
+        # ===== 底部按钮 =====
         btn_layout = QHBoxLayout()
-        btn_add = QPushButton("➕ 添加规则")
-        btn_add.clicked.connect(self.add_rule)
-        btn_remove = QPushButton("❌ 删除规则")
-        btn_remove.clicked.connect(self.remove_rule)
-        btn_layout.addWidget(btn_add)
-        btn_layout.addWidget(btn_remove)
-        layout.addLayout(btn_layout)
-        self.load_data()
-    def load_data(self):
-        self.list_widget.clear()
-        conn = get_connection()
-        for row in conn.execute("SELECT id, rule_path FROM project_map WHERE project_id = ?", (self.project_id,)):
-            item = QListWidgetItem(row[1])
-            item.setData(Qt.UserRole, row[0])
-            self.list_widget.addItem(item)
-        conn.close()
-    def add_rule(self):
-        text, ok = QInputDialog.getText(self, "添加规则", "输入路径/标题匹配关键词：")
+        self.btn_assign = QPushButton("✓ 分配选中的文件")
+        self.btn_assign.clicked.connect(self.assign_selected)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_assign)
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        main_layout.addLayout(btn_layout)
+
+        # 加载数据
+        self.load_groups()
+
+    def load_projects(self):
+        """加载项目列表到下拉框"""
+        self.project_combo.clear()
+        from core.database import get_projects_with_subprojects
+        projects_data = get_projects_with_subprojects(False)
+        for pk, pn in projects_data:
+            if pk != '未分配':
+                project_id = int(pk.split('.')[0].replace('project_', ''))
+                self.project_combo.addItem(pn, project_id)
+
+    def on_project_changed(self, index):
+        """项目选择变化"""
+        self.update_assign_button_text()
+
+    def create_new_project(self):
+        """创建新项目"""
+        text, ok = QInputDialog.getText(self, "新建项目", "输入项目名称:")
         if ok and text.strip():
             conn = get_connection()
-            conn.execute("INSERT INTO project_map (project_id, project_name, rule_path) VALUES (?, ?, ?)", 
-                        (self.project_id, self.project_name, text.strip()))
-            conn.commit()
-            conn.close()
-            self.load_data()
-    def remove_rule(self):
-        selected = self.list_widget.currentItem()
-        if selected:
-            conn = get_connection()
-            conn.execute("DELETE FROM project_map WHERE id = ?", (selected.data(Qt.UserRole),))
-            conn.commit()
-            conn.close()
-            self.load_data()
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO projects (project_name, created_at) VALUES (?, ?)",
+                    (text.strip(), datetime.now().isoformat())
+                )
+                new_id = cursor.lastrowid
+                conn.commit()
+                # 添加到下拉框并选中
+                self.project_combo.addItem(text.strip(), new_id)
+                self.project_combo.setCurrentIndex(self.project_combo.count() - 1)
+            except Exception as e:
+                QMessageBox.warning(self, "错误", f"创建项目失败: {e}")
+            finally:
+                conn.close()
+
+    def fetch_inbox_selection(self):
+        """获取主界面 inbox 中选中的文件"""
+        self.selected_files = []
+        parent = self.parent()
+        if hasattr(parent, 'tree_inbox') and hasattr(parent, 'model_inbox'):
+            try:
+                selected_indexes = parent.tree_inbox.selectionModel().selectedRows()
+                for index in selected_indexes:
+                    item = parent.model_inbox.itemFromIndex(index.siblingAtColumn(0))
+                    if item:
+                        fpath = item.data(Qt.UserRole + 1)
+                        if fpath:
+                            app_name = item.data(Qt.UserRole + 2) or ""
+                            self.selected_files.append({'file_path': fpath, 'app_name': app_name})
+            except Exception:
+                pass
+
+    def on_filter_changed(self):
+        """筛选变化时重新加载"""
+        self.load_groups()
+
+    def load_groups(self):
+        """根据分组模式加载文件分组"""
+        self.group_tree.clear()
+        import os
+
+        filter_text = self.filter_input.text().lower()
+
+        # 判断当前模式
+        if self.btn_by_folder.isChecked():
+            mode = 0  # 按文件夹
+        elif self.btn_by_app.isChecked():
+            mode = 1  # 按应用
+        else:
+            mode = 2  # 按文件名
+
+        if mode == 0:  # 按文件夹
+            groups = {}
+            for f in self.selected_files:
+                folder = os.path.dirname(f['file_path'])
+                full_path = folder if folder else '/'
+                if filter_text and filter_text not in full_path.lower():
+                    continue
+                key = folder
+                if key not in groups:
+                    groups[key] = {'name': full_path, 'path': full_path, 'files': []}
+                groups[key]['files'].append(f)
+        elif mode == 1:  # 按应用
+            groups = {}
+            for f in self.selected_files:
+                app = f['app_name'] or 'Unknown'
+                if filter_text and filter_text not in app.lower():
+                    continue
+                if app not in groups:
+                    groups[app] = {'name': app, 'path': app, 'files': []}
+                groups[app]['files'].append(f)
+        else:  # 按文件名
+            groups = {}
+            for f in self.selected_files:
+                fname = os.path.basename(f['file_path'])
+                key = fname.split('.')[0] if '.' in fname else fname
+                if filter_text and filter_text not in key.lower():
+                    continue
+                if len(key) > 3:
+                    if key not in groups:
+                        groups[key] = {'name': key, 'path': key, 'files': []}
+                    groups[key]['files'].append(f)
+
+        # 添加到列表
+        for key, group in groups.items():
+            # 创建分组节点
+            group_item = QTreeWidgetItem(['', group['name'] + f" ({len(group['files'])})", ''])
+            group_item.setFlags(group_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+            group_item.setCheckState(0, Qt.Unchecked)
+            group_item.setData(0, Qt.UserRole, {'type': 'group', 'group': group, 'key': key})
+
+            # 子节点显示文件（带复选框）
+            for f in group['files']:
+                fname = os.path.basename(f['file_path'])
+                child = QTreeWidgetItem(['', fname, ''])
+                child.setFlags(child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+                child.setCheckState(0, Qt.Unchecked)
+                child.setData(0, Qt.UserRole, {'type': 'file', 'file': f, 'group_key': key, 'group_item': group_item})
+                group_item.addChild(child)
+
+            self.group_tree.addTopLevelItem(group_item)
+
+        self.update_assign_button_text()
+
+    def on_item_expanded(self, item):
+        """展开分组"""
+        pass
+
+    def on_item_changed(self, item, column):
+        """处理复选框变化"""
+        data = item.data(0, Qt.UserRole)
+        if not data:
+            return
+
+        # 避免递归更新
+        if hasattr(self, '_updating') and self._updating:
+            return
+
+        self._updating = True
+
+        try:
+            if data['type'] == 'group':
+                # 父节点勾选变化 -> 设置所有子节点
+                checked = item.checkState(0) == Qt.Checked
+                for i in range(item.childCount()):
+                    item.child(i).setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+            elif data['type'] == 'file':
+                # 检查是否所有文件都被选中 -> 更新父节点状态
+                parent = item.parent()
+                if parent:
+                    all_checked = True
+                    any_checked = False
+                    for i in range(parent.childCount()):
+                        if parent.child(i).checkState(0) == Qt.Checked:
+                            any_checked = True
+                        else:
+                            all_checked = False
+                    if all_checked:
+                        parent.setCheckState(0, Qt.Checked)
+                    elif any_checked:
+                        parent.setCheckState(0, Qt.PartiallyChecked)
+                    else:
+                        parent.setCheckState(0, Qt.Unchecked)
+
+            self.update_assign_button_text()
+        finally:
+            self._updating = False
+
+    def update_assign_button_text(self):
+        """更新分配按钮的文字，显示选中的文件数"""
+        count = 0
+        for i in range(self.group_tree.topLevelItemCount()):
+            group_item = self.group_tree.topLevelItem(i)
+            for j in range(group_item.childCount()):
+                child = group_item.child(j)
+                if child.checkState(0) == Qt.Checked:
+                    count += 1
+
+        project_name = self.project_combo.currentText() or "项目"
+        self.btn_assign.setText(f"✓ 分配选中的文件到 '{project_name}' ({count})")
+        self.selected_count_label.setText(f"已选 {count} 个文件")
+
+    def select_all(self):
+        """全选所有文件"""
+        for i in range(self.group_tree.topLevelItemCount()):
+            group_item = self.group_tree.topLevelItem(i)
+            group_item.setCheckState(0, Qt.Checked)
+            for j in range(group_item.childCount()):
+                group_item.child(j).setCheckState(0, Qt.Checked)
+        self.update_assign_button_text()
+
+    def deselect_all(self):
+        """反选所有文件"""
+        for i in range(self.group_tree.topLevelItemCount()):
+            group_item = self.group_tree.topLevelItem(i)
+            group_item.setCheckState(0, Qt.Unchecked)
+            for j in range(group_item.childCount()):
+                group_item.child(j).setCheckState(0, Qt.Unchecked)
+        self.update_assign_button_text()
+
+    def assign_selected(self):
+        """分配选中的文件到项目"""
+        selected_files = []
+        project_id = self.project_combo.currentData()
+        project_name = self.project_combo.currentText()
+
+        if not project_id and not project_name:
+            QMessageBox.warning(self, "提示", "请先选择或输入目标项目")
+            return
+
+        # 收集选中的文件
+        for i in range(self.group_tree.topLevelItemCount()):
+            group_item = self.group_tree.topLevelItem(i)
+            for j in range(group_item.childCount()):
+                child = group_item.child(j)
+                if child.checkState(0) == Qt.Checked:
+                    file_data = child.data(0, Qt.UserRole)
+                    if file_data and file_data['type'] == 'file':
+                        selected_files.append(file_data['file'])
+
+        if not selected_files:
+            QMessageBox.warning(self, "提示", "请先选择要分配的文件")
+            return
+
+        # 分配文件
+        conn = get_connection()
+        for f in selected_files:
+            conn.execute(
+                "INSERT OR REPLACE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
+                (f['file_path'], project_id, datetime.now().isoformat())
+            )
+        conn.commit()
+        conn.close()
+
+        # 从树中移除已分配的文件（清空复选框并从树中删除）
+        for i in range(self.group_tree.topLevelItemCount()):
+            group_item = self.group_tree.topLevelItem(i)
+            children_to_remove = []
+            for j in range(group_item.childCount()):
+                child = group_item.child(j)
+                file_data = child.data(0, Qt.UserRole)
+                if file_data and file_data['type'] == 'file':
+                    # 检查是否在已分配列表中
+                    for f in selected_files:
+                        if f['file_path'] == file_data['file']['file_path']:
+                            children_to_remove.append(child)
+                            # 从 self.selected_files 中移除
+                            self.selected_files = [sf for sf in self.selected_files if sf['file_path'] != f['file_path']]
+                            break
+
+            for child in children_to_remove:
+                # 从父节点移除
+                group_item.removeChild(child)
+
+            # 如果分组没有文件了，删除分组
+            if group_item.childCount() == 0:
+                index = self.group_tree.indexOfTopLevelItem(group_item)
+                if index >= 0:
+                    self.group_tree.takeTopLevelItem(index)
+
+        self.update_assign_button_text()
+        QMessageBox.information(self, "完成", f"已分配 {len(selected_files)} 个文件到 '{project_name}'")
+
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -2892,7 +3223,7 @@ class DashboardV2(QMainWindow):
         inbox_action_bar.addWidget(self.btn_view_fragments)
         
         self.btn_extract_rules = QPushButton("智能提取规则")
-        self.btn_extract_rules.clicked.connect(self.show_extract_rules_dialog)
+        self.btn_extract_rules.clicked.connect(lambda: InboxOrganizerDialog(self).exec())
         self.btn_extract_rules.setEnabled(False)
         inbox_action_bar.addWidget(self.btn_extract_rules)
         
@@ -3704,7 +4035,7 @@ class DashboardV2(QMainWindow):
             name_pure = item_node.text().replace("[归档] ", "")
             menu.addAction("➕ 新建子项目").triggered.connect(lambda: self.action_new_project(project_id))
             menu.addAction("✏️ 重命名").triggered.connect(lambda: self.action_rename_project(project_id, name_pure))
-            menu.addAction("🤖 编辑自动匹配规则...").triggered.connect(lambda: ProjectRulesDialog(project_id, name_pure, self).exec())
+            menu.addAction("🤖 编辑自动匹配规则...").triggered.connect(lambda: RuleManagementDialog(self, project_id).exec())
             
             # 【新增】：导出 Excel 账单
             menu.addSeparator()
@@ -4185,15 +4516,6 @@ class DashboardV2(QMainWindow):
         if not projects:
             return QMessageBox.warning(self, "提示", "请先在左侧新建一个项目！")
         
-        # 确认对话框
-        reply = QMessageBox.question(
-            self, "批量分配确认",
-            f"确定要将选中的 {len(file_paths)} 个文件分配到同一个项目吗？",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
-            return
-        
         dlg = QDialog(self)
         dlg.setWindowTitle(f"批量分配 ({len(file_paths)} 个文件)")
         layout = QVBoxLayout(dlg)
@@ -4239,15 +4561,6 @@ class DashboardV2(QMainWindow):
         projects = [p for p in get_all_projects_flat() if not p['is_archived']]
         if not projects:
             return QMessageBox.warning(self, "提示", "请先在左侧新建一个项目！")
-        
-        # 确认对话框
-        reply = QMessageBox.question(
-            self, "批量分配确认",
-            f"确定要将 \"{app_name}\" 的所有待分配文件都分配到同一个项目吗？",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
-            return
         
         dlg = QDialog(self)
         dlg.setWindowTitle(f"批量分配 - {app_name}")

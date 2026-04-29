@@ -222,6 +222,22 @@ def init_db():
     conn.commit()
     conn.close()
 
+    # 迁移 project_map 表：添加新字段
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # 检查 rule_type 列是否存在
+        cursor.execute("PRAGMA table_info(project_map)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'rule_type' not in columns:
+            cursor.execute("ALTER TABLE project_map ADD COLUMN rule_type TEXT DEFAULT 'file_name'")
+        if 'enabled' not in columns:
+            cursor.execute("ALTER TABLE project_map ADD COLUMN enabled INTEGER DEFAULT 1")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
 
 def get_config(key, default=None):
     """读取配置项"""
