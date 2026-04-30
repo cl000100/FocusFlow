@@ -634,12 +634,18 @@ class InboxOrganizerDialog(QDialog):
     def load_projects(self):
         """加载项目列表到下拉框"""
         self.project_combo.clear()
-        from core.database import get_projects_with_subprojects
-        projects_data = get_projects_with_subprojects(False)
-        for pk, pn in projects_data:
-            if pk != '未分配':
-                project_id = int(pk.split('.')[0].replace('project_', ''))
-                self.project_combo.addItem(pn, project_id)
+        from core.project_tree import load_project_tree
+        # 使用父窗口的"显示归档"复选框
+        parent_dashboard = self.parent()
+        show_archived = parent_dashboard.chk_archived.isChecked() if parent_dashboard and hasattr(parent_dashboard, 'chk_archived') else False
+
+        tree = load_project_tree()
+        for node in tree.get_all_nodes(include_archived=True):
+            if node.is_archived and not show_archived:
+                continue
+            prefix = "[归档] " if node.is_archived else ""
+            display_name = prefix + node.name
+            self.project_combo.addItem(display_name, node.id)
 
     def on_project_changed(self, index):
         """项目选择变化"""
@@ -1083,12 +1089,19 @@ class FloatingWidget(QWidget):
     
     def restore_state(self):
         """恢复上次的位置和显示状态"""
-        x = get_config("floating_position_x", "100")
-        y = get_config("floating_position_y", "200")
+        x = int(get_config("floating_position_x", "100"))
+        y = int(get_config("floating_position_y", "200"))
         visible = get_config("floating_visible", "false")
-        
-        self.move(int(x), int(y))
-        
+
+        # 检查位置是否在屏幕范围内，超出则重置
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        screen_geo = screen.geometry()
+        if x < 0 or x > screen_geo.width() - 50 or y < 0 or y > screen_geo.height() - 50:
+            x, y = 100, 200
+
+        self.move(x, y)
+
         if visible == "true":
             self.show()
 

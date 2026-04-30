@@ -60,15 +60,24 @@ class RuleExtractorDialog(QDialog):
 
     def load_projects(self):
         from core.database import get_connection
-        conn = get_connection()
-        rows = conn.execute("SELECT id, project_name FROM projects ORDER BY project_name")
+        from core.project_tree import load_project_tree
+
         self.project_combo.clear()
         seen = set()
-        for row in rows:
-            if row[1] not in seen:
-                self.project_combo.addItem(row[1], row[0])
-                seen.add(row[1])
-        conn.close()
+
+        # 使用父窗口的"显示归档"复选框状态，默认显示已归档项目
+        parent_dashboard = self.parent()
+        show_archived = parent_dashboard.chk_archived.isChecked() if parent_dashboard and hasattr(parent_dashboard, 'chk_archived') else True
+
+        tree = load_project_tree()
+        for node in tree.get_all_nodes(include_archived=True):
+            if node.is_archived and not show_archived:
+                continue
+            prefix = "[归档] " if node.is_archived else ""
+            display_name = prefix + node.name
+            if display_name not in seen:
+                self.project_combo.addItem(display_name, node.id)
+                seen.add(display_name)
 
     def create_new_project(self):
         """创建新项目"""
