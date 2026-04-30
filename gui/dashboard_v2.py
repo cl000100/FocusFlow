@@ -4143,6 +4143,18 @@ class DashboardV2(QMainWindow):
             conn.close()
             self.refresh_data()
     def action_remove_file(self, file_path):
+        # 检查是否是规则自动分配的文件
+        conn = get_connection()
+        rule_info = conn.execute(
+            "SELECT source_rule_id FROM file_assignment WHERE file_path = ?",
+            (file_path,)
+        ).fetchone()
+        conn.close()
+
+        if rule_info and rule_info[0]:
+            QMessageBox.information(self, "提示", "该文件是通过规则自动分配的，无法手动移出。如需移出，请先删除对应的规则。")
+            return
+
         remove_file_assignment(file_path)
         self.refresh_data()
     def action_archive_project(self, project_id):
