@@ -3038,6 +3038,13 @@ class DashboardV2(QMainWindow):
         left_header.addWidget(self.chk_archived)
         left_layout.addLayout(left_header)
 
+        # 项目管理搜索框
+        self.project_search = QLineEdit()
+        self.project_search.setPlaceholderText("search...")
+        self.project_search.setStyleSheet("background-color: #3c3c3c; color: #e0e0e0; border: 1px solid #555; padding: 4px;")
+        self.project_search.textChanged.connect(self.on_project_search_changed)
+        left_layout.addWidget(self.project_search)
+
         # 自定义 QTreeView 子类，重写 dropEvent 方法
         class CustomTreeView(QTreeView):
             def __init__(self, parent=None):
@@ -3046,76 +3053,48 @@ class DashboardV2(QMainWindow):
             
             def dropEvent(self, event):
                 if event.mimeData().hasFormat('application/x-qabstractitemmodeldatalist'):
-                    # 获取被拖拽的项目
                     source_index = self.currentIndex()
                     if not source_index.isValid():
-                        from PySide6.QtWidgets import QMessageBox
-                        QMessageBox.information(self, "调试", "源索引无效")
                         return
-                    
-                    # 获取源项目的ID
+
                     source_item = self.model().itemFromIndex(source_index)
                     source_id = source_item.data(Qt.UserRole + 1)
-                    source_name = source_item.text()
                     if not source_id:
-                        from PySide6.QtWidgets import QMessageBox
-                        QMessageBox.information(self, "调试", f"源项目ID无效: {source_name}")
                         return
-                    
-                    # 获取目标项目
+
                     target_index = self.indexAt(event.pos())
                     target_id = None
-                    target_name = "根节点"
-                    
+
                     if target_index.isValid():
-                        # 获取目标项目的ID
                         target_item = self.model().itemFromIndex(target_index)
                         target_id = target_item.data(Qt.UserRole + 1)
-                        target_name = target_item.text()
-                        
-                        # 如果目标是文件，获取其父项目的ID
+
                         if not target_id:
                             parent_item = target_item.parent()
                             if parent_item:
                                 target_id = parent_item.data(Qt.UserRole + 1)
-                                target_name = f"{parent_item.text()} (文件: {target_name})"
                             else:
-                                from PySide6.QtWidgets import QMessageBox
-                                QMessageBox.information(self, "调试", f"目标文件没有父项目: {target_name}")
                                 return
-                    
-                    # 防止循环依赖
+
                     if source_id == target_id:
-                        from PySide6.QtWidgets import QMessageBox
-                        QMessageBox.information(self, "调试", "源项目和目标项目相同，取消操作")
                         return
-                    
-                    # 调用move_project函数
+
                     from core.project_tree import move_project
-                    from PySide6.QtWidgets import QMessageBox
-                    QMessageBox.information(self, "调试", f"准备移动项目: {source_name} (ID: {source_id}) 到 {target_name} (ID: {target_id})")
-                    
                     success = move_project(source_id, target_id)
-                    
-                    if success:
-                        QMessageBox.information(self, "调试", "项目移动成功，正在刷新项目树...")
-                        # 强制刷新项目树，不依赖哈希检查
-                        if self.parent_window:
-                            self.parent_window.save_tree_state()
-                            self.parent_window.model_projects.removeRows(0, self.parent_window.model_projects.rowCount())
-                            
-                            show_archived = self.parent_window.chk_archived.isChecked()
-                            tree = load_project_tree()
-                            for root in tree.get_root_nodes():
-                                if not root.is_archived or show_archived:
-                                    self.parent_window._build_project_tree_recursive(root, self.parent_window.model_projects.invisibleRootItem(), show_archived)
-                                    
-                            self.parent_window.restore_tree_state()
-                            self.parent_window.last_tree_hash = None  # 重置哈希值，确保下次刷新时重新计算
-                            QMessageBox.information(self, "调试", "项目树刷新完成")
-                    else:
-                        QMessageBox.information(self, "调试", "项目移动失败")
-                    
+
+                    if success and self.parent_window:
+                        self.parent_window.save_tree_state()
+                        self.parent_window.model_projects.removeRows(0, self.parent_window.model_projects.rowCount())
+
+                        show_archived = self.parent_window.chk_archived.isChecked()
+                        tree = load_project_tree()
+                        for root in tree.get_root_nodes():
+                            if not root.is_archived or show_archived:
+                                self.parent_window._build_project_tree_recursive(root, self.parent_window.model_projects.invisibleRootItem(), show_archived)
+
+                        self.parent_window.restore_tree_state()
+                        self.parent_window.last_tree_hash = None
+
                     event.acceptProposedAction()
                 else:
                     super().dropEvent(event)
@@ -3160,7 +3139,14 @@ class DashboardV2(QMainWindow):
         right_header.addLayout(filter_layout)
         
         right_layout.addLayout(right_header)
-        
+
+        # Inbox 搜索框
+        self.inbox_search = QLineEdit()
+        self.inbox_search.setPlaceholderText("search...")
+        self.inbox_search.setStyleSheet("background-color: #3c3c3c; color: #e0e0e0; border: 1px solid #555; padding: 4px;")
+        self.inbox_search.textChanged.connect(self.on_inbox_search_changed)
+        right_layout.addWidget(self.inbox_search)
+
         self.tree_inbox = QTreeView()
         self.tree_inbox.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tree_inbox.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -3337,30 +3323,42 @@ class DashboardV2(QMainWindow):
     # ================= 核心刷新逻辑 =================
     def refresh_data(self):
         self._auto_assign_from_rules()
-        
+
+        # 保存搜索状态
+        project_search_text = getattr(self, 'project_search', None) and self.project_search.text() or ""
+        inbox_search_text = getattr(self, 'inbox_search', None) and self.inbox_search.text() or ""
+
         # 【修复：左侧项目树智能刷新检测】
-        # 计算当前项目的“结构指纹”（只有在新建/删除项目，或者新分配了文件时，指纹才会变）
+        # 计算当前项目的"结构指纹"（只有在新建/删除项目，或者新分配了文件时，指纹才会变）
         conn = get_connection()
         projs = conn.execute("SELECT id, parent_id, project_name FROM projects").fetchall()
         archs = conn.execute("SELECT project_id FROM project_archive").fetchall()
         files = conn.execute("SELECT file_path, project_id FROM file_assignment").fetchall()
         conn.close()
-        
+
         current_tree_hash = hash(str(projs) + str(archs) + str(files) + str(self.chk_archived.isChecked()))
-        
+
         if getattr(self, 'last_tree_hash', None) != current_tree_hash:
             # 结构发生了变化（如新建了项目、刚分配了文件），执行带状态恢复的全量重绘
             self.save_tree_state()
             self.model_projects.removeRows(0, self.model_projects.rowCount())
-            
+
             show_archived = self.chk_archived.isChecked()
             tree = load_project_tree()
             for root in tree.get_root_nodes():
                 if not root.is_archived or show_archived:
                     self._build_project_tree_recursive(root, self.model_projects.invisibleRootItem(), show_archived)
-                    
+
             self.restore_tree_state()
             self.last_tree_hash = current_tree_hash
+
+            # 恢复搜索状态
+            if project_search_text and hasattr(self, 'project_search'):
+                self.project_search.setText(project_search_text)
+                self.on_project_search_changed(project_search_text)
+            if inbox_search_text and hasattr(self, 'inbox_search'):
+                self.inbox_search.setText(inbox_search_text)
+                self.on_inbox_search_changed(inbox_search_text)
         else:
             # 结构完全没变，仅仅是时间数字在增加！执行极速静默更新，绝对不破坏焦点和层级
             self._update_tree_durations_in_place()
@@ -3514,7 +3512,7 @@ class DashboardV2(QMainWindow):
                     active_fpath = l_path
             except: pass
 
-        # 1. 核心计算：全局“本次连续时长”
+        # 1. 核心计算：全局"本次连续时长"
         if is_idle:
             self._session_seconds = 0
             self._current_track_path = None
@@ -3624,7 +3622,7 @@ class DashboardV2(QMainWindow):
         """, (today_start, tomorrow_start)).fetchall()
         
         # 2. 查出今天的闲置记录 (从 runtime_status 衍生，或者由于后台在闲置时根本不记入 activity_log，这里会有时间断层)
-        # 我们用“找时间断层”的方法，反推你今天几点在闲置！
+        # 我们用"找时间断层"的方法，反推你今天几点在闲置！
         
         blocks = []
         if not logs:
@@ -3651,7 +3649,7 @@ class DashboardV2(QMainWindow):
                         # 如果换了软件，或者发生了长达 1 分钟以上的断层(说明你刚才发呆了或者离开了电脑)
                         blocks.append(current_block)
                         
-                        # 把这中间的断层，画成灰色的“闲置色块”
+                        # 把这中间的断层，画成灰色的"闲置色块"
                         if start_sec - current_block[1] > 60:
                             blocks.append([current_block[1], start_sec, "Idle", "", True])
                             
@@ -3988,7 +3986,13 @@ class DashboardV2(QMainWindow):
                 menu.addAction("📤 导出项目和规则...").triggered.connect(self.action_export_projects)
             # 如果只选中了文件，显示文件的批量操作
             elif has_files and not has_projects:
-                menu.addAction(f"↩️ 批量移出选中的 {selected_count} 个文件").triggered.connect(self.action_remove_selected_files)
+                file_paths = [f for _, f in selected_items]
+                menu.addAction(f"➡️ 批量分配选中的 {selected_count} 个文件到项目...").triggered.connect(
+                    lambda: self.action_assign_selected_batch(file_paths)
+                )
+                menu.addAction(f"↩️ 批量移出选中的 {selected_count} 个文件").triggered.connect(
+                    lambda: self.action_remove_selected_files(file_paths)
+                )
             # 如果混合选中了项目和文件，只显示通用操作
             else:
                 menu.addAction("📤 导出项目和规则...").triggered.connect(self.action_export_projects)
@@ -4007,6 +4011,7 @@ class DashboardV2(QMainWindow):
 
         if file_path:
             menu.addAction("↩️ 移出记录 (回 Inbox)").triggered.connect(lambda: self.action_remove_file(file_path))
+            menu.addAction("➡️ 分配到其他项目...").triggered.connect(lambda: self.action_assign_item(file_path))
         elif project_id:
             name_pure = item_node.text().replace("[归档] ", "")
             menu.addAction("➕ 新建子项目").triggered.connect(lambda: self.action_new_project(project_id))
@@ -4208,19 +4213,20 @@ class DashboardV2(QMainWindow):
                     return
             self.refresh_data()
     
-    def action_remove_selected_files(self):
-        # 获取所有选中的文件路径
-        selected_indexes = self.tree_projects.selectionModel().selectedRows()
-        file_paths = []
-        for index in selected_indexes:
-            item_node = self.model_projects.itemFromIndex(index.siblingAtColumn(0))
-            file_path = item_node.data(Qt.UserRole + 2)
-            if file_path:
-                file_paths.append(file_path)
-        
+    def action_remove_selected_files(self, file_paths=None):
+        if file_paths is None:
+            # 从项目树的选择中获取
+            selected_indexes = self.tree_projects.selectionModel().selectedRows()
+            file_paths = []
+            for index in selected_indexes:
+                item_node = self.model_projects.itemFromIndex(index.siblingAtColumn(0))
+                file_path = item_node.data(Qt.UserRole + 2)
+                if file_path:
+                    file_paths.append(file_path)
+
         if not file_paths:
             return
-        
+
         if QMessageBox.question(self, "确认移出", f"确定要将这 {len(file_paths)} 个文件移出记录，退回Inbox吗？") == QMessageBox.Yes:
             for file_path in file_paths:
                 remove_file_assignment(file_path)
@@ -4280,7 +4286,7 @@ class DashboardV2(QMainWindow):
                 
             df_grouped['持续时间'] = df_grouped['duration'].apply(format_dur)
             
-            # 调整列的顺序，把“所属项目”放在第二列
+            # 调整列的顺序，把"所属项目"放在第二列
             df_final = df_grouped[['work_date', '所属项目', 'app_name', 'file_path', '持续时间']]
             df_final.columns = ['工作日期', '项目/制作阶段', '使用软件', '操作文件 / 窗口', '累计时长']
             df_final = df_final.sort_values(by=['工作日期', '项目/制作阶段'], ascending=[False, True])
@@ -4383,7 +4389,7 @@ class DashboardV2(QMainWindow):
                 # 最后，把全局大盘生成并放在最前面
                 if global_summary:
                     df_summary = pd.DataFrame(global_summary)
-                    # 添加一行“总计”
+                    # 添加一行"总计"
                     total_all = sum([float(item['折合小时数']) for item in global_summary])
                     df_summary.loc[len(df_summary)] = ['【所有项目总计】', '--', total_all]
                     
@@ -4426,8 +4432,14 @@ class DashboardV2(QMainWindow):
         layout.addWidget(btns)
         if dlg.exec() == QDialog.Accepted:
             conn = get_connection()
-            conn.execute("INSERT OR REPLACE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)", 
-                         (file_path, combo.currentData(), datetime.now().isoformat()))
+            # 检查是否已有记录
+            existing = conn.execute("SELECT id FROM file_assignment WHERE file_path = ?", (file_path,)).fetchone()
+            if existing:
+                conn.execute("UPDATE file_assignment SET project_id = ?, assigned_at = ? WHERE file_path = ?",
+                             (combo.currentData(), datetime.now().isoformat(), file_path))
+            else:
+                conn.execute("INSERT INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
+                             (file_path, combo.currentData(), datetime.now().isoformat()))
             conn.commit()
             conn.close()
             self.refresh_data()
@@ -4481,22 +4493,150 @@ class DashboardV2(QMainWindow):
     def on_filter_threshold_changed(self, value):
         self.filter_threshold_seconds = value
         self.refresh_data()  # 重新加载数据
-    
-    # 【新增】批量分配选中的文件
-    def action_assign_selected_batch(self):
-        selected_indexes = self.tree_inbox.selectionModel().selectedRows()
-        if not selected_indexes:
+
+    def on_project_search_changed(self, text):
+        self._filter_project_tree(text)
+
+    def _filter_project_tree(self, filter_text):
+        """根据搜索文本过滤项目树 - 搜索文件路径和项目名称"""
+        filter_text = filter_text.lower().strip()
+        model = self.tree_projects.model()
+        if not model:
             return
-        
-        # 收集所有选中的文件路径
-        file_paths = []
-        for index in selected_indexes:
-            item = self.model_inbox.itemFromIndex(index.siblingAtColumn(0))
+
+        root = model.invisibleRootItem()
+
+        def match_item(item):
+            """检查项是否匹配搜索词"""
+            text = item.text().lower()
+            if filter_text in text:
+                return True
+            file_path = (item.data(Qt.UserRole + 2) or "").lower()
+            if filter_text and filter_text in file_path:
+                return True
+            return False
+
+        def process_set_visible(item):
+            """递归设置可见性"""
+            model = self.tree_projects.model()
+            row = item.row()
+            parent = item.parent() or model.invisibleRootItem()
+            parent_index = model.indexFromItem(parent)
+
+            item_matches = match_item(item)
+
+            has_matching_child = False
+            for i in range(item.rowCount()):
+                child = item.child(i)
+                if child and process_set_visible(child):
+                    has_matching_child = True
+
+            should_show = item_matches or has_matching_child
+
+            if parent_index.isValid():
+                self.tree_projects.setRowHidden(row, parent_index, not should_show)
+
+            return should_show
+
+        for i in range(root.rowCount()):
+            item = root.child(i)
             if item:
-                fpath = item.data(Qt.UserRole + 1)
-                if fpath:  # 有 file_path 说明是文件项，不是分组头
-                    file_paths.append(fpath)
-        
+                process_set_visible(item)
+
+        # 展开所有顶级项目
+        for i in range(root.rowCount()):
+            item = root.child(i)
+            if item:
+                index = model.indexFromItem(item)
+                if index.isValid():
+                    self.tree_projects.expand(index)
+
+    def on_inbox_search_changed(self, text):
+        self._write_debug(f"inbox search changed: '{text}'")
+        self._filter_inbox_tree(text)
+
+    def _write_debug(self, msg):
+        """写调试信息到桌面"""
+        import os
+        desktop = os.path.expanduser("~/Desktop/debug.log")
+        with open(desktop, "a") as f:
+            f.write(f"{msg}\n")
+            f.flush()
+
+    def _clear_debug(self):
+        """清空调试文件"""
+        import os
+        desktop = os.path.expanduser("~/Desktop/debug.log")
+        with open(desktop, "w") as f:
+            f.write("")
+
+    def _filter_inbox_tree(self, filter_text):
+        """根据搜索文本过滤 Inbox 树"""
+        self._clear_debug()
+        self._write_debug(f"_filter_inbox_tree called with: '{filter_text}'")
+        filter_text = filter_text.lower().strip()
+        model = self.tree_inbox.model()
+        if not model:
+            self._write_debug("model is None!")
+            return
+
+        self._write_debug(f"model rowCount: {model.rowCount()}")
+
+        def match_item(item):
+            """检查项是否匹配搜索词"""
+            file_path = (item.data(Qt.UserRole + 1) or "").lower()
+            app_name = (item.data(Qt.UserRole + 2) or "").lower()
+            text = item.text().lower()
+            self._write_debug(f"match_item: text='{text}', file_path='{file_path}', app_name='{app_name}', filter='{filter_text}'")
+            return filter_text in text or filter_text in file_path or filter_text in app_name
+
+        def process_item(row, parent_item, parent_index):
+            """递归处理每个项"""
+            item = model.item(row, 0)
+            if not item:
+                return False
+
+            is_header = item.data(Qt.UserRole + 6)
+            app_name_header = item.data(Qt.UserRole + 5)
+
+            self._write_debug(f"process_item: row={row}, text='{item.text()}', is_header={is_header}")
+
+            if is_header and app_name_header:
+                # 分组头：检查是否有匹配的子项
+                has_match = False
+                for child_row in range(item.rowCount()):
+                    if process_item(child_row, item, model.indexFromItem(item)):
+                        has_match = True
+                self.tree_inbox.setRowHidden(row, parent_index, not has_match and bool(filter_text))
+                return has_match
+            else:
+                # 普通项
+                item_matches = match_item(item)
+                self._write_debug(f"  item_matches={item_matches}")
+                self.tree_inbox.setRowHidden(row, parent_index, not item_matches and bool(filter_text))
+                return item_matches
+
+        # 遍历所有行
+        for row in range(model.rowCount()):
+            self._write_debug(f"Processing row {row}")
+            process_item(row, None, QModelIndex())
+
+    # 【新增】批量分配选中的文件
+    def action_assign_selected_batch(self, file_paths=None):
+        if file_paths is None:
+            # 从 inbox 的选择中获取
+            selected_indexes = self.tree_inbox.selectionModel().selectedRows()
+            if not selected_indexes:
+                return
+
+            file_paths = []
+            for index in selected_indexes:
+                item = self.model_inbox.itemFromIndex(index.siblingAtColumn(0))
+                if item:
+                    fpath = item.data(Qt.UserRole + 1)
+                    if fpath:
+                        file_paths.append(fpath)
+
         if not file_paths:
             return QMessageBox.warning(self, "提示", "没有选中的文件。")
         
@@ -4527,19 +4667,22 @@ class DashboardV2(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             target_project_id = combo.currentData()
             conn = get_connection()
-            
+
             count = 0
             for file_path in file_paths:
                 if file_path:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
-                        (file_path, target_project_id, datetime.now().isoformat())
-                    )
+                    existing = conn.execute("SELECT id FROM file_assignment WHERE file_path = ?", (file_path,)).fetchone()
+                    if existing:
+                        conn.execute("UPDATE file_assignment SET project_id = ?, assigned_at = ? WHERE file_path = ?",
+                                    (target_project_id, datetime.now().isoformat(), file_path))
+                    else:
+                        conn.execute("INSERT INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
+                                    (file_path, target_project_id, datetime.now().isoformat()))
                     count += 1
-            
+
             conn.commit()
             conn.close()
-            
+
             QMessageBox.information(self, "完成", f"已将 {count} 个文件分配到项目。")
             self.clear_inbox_selection()
             self.refresh_data()
@@ -4638,15 +4781,18 @@ class DashboardV2(QMainWindow):
         count = 0
         for file_path in file_paths:
             if file_path:
-                conn.execute(
-                    "INSERT OR REPLACE INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
-                    (file_path, project_id, datetime.now().isoformat())
-                )
+                existing = conn.execute("SELECT id FROM file_assignment WHERE file_path = ?", (file_path,)).fetchone()
+                if existing:
+                    conn.execute("UPDATE file_assignment SET project_id = ?, assigned_at = ? WHERE file_path = ?",
+                                (project_id, datetime.now().isoformat(), file_path))
+                else:
+                    conn.execute("INSERT INTO file_assignment (file_path, project_id, assigned_at) VALUES (?, ?, ?)",
+                                (file_path, project_id, datetime.now().isoformat()))
                 count += 1
-        
+
         conn.commit()
         conn.close()
-        
+
         QMessageBox.information(self, "完成", f"已将 {count} 个文件直接分配到项目 \"{project_name}\"。")
         self.clear_inbox_selection()
         self.refresh_data()
@@ -5262,8 +5408,6 @@ class DashboardV2(QMainWindow):
             # 在Qt中，当拖拽时，currentIndex()应该是被拖拽的项目
             source_index = self.tree_projects.currentIndex()
             if not source_index.isValid():
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.information(self, "调试", "源索引无效")
                 return
             
             # 获取源项目的ID
@@ -5271,8 +5415,6 @@ class DashboardV2(QMainWindow):
             source_id = source_item.data(Qt.UserRole + 1)
             source_name = source_item.text()
             if not source_id:
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.information(self, "调试", f"源项目ID无效: {source_name}")
                 return
             
             # 获取目标项目
@@ -5293,25 +5435,17 @@ class DashboardV2(QMainWindow):
                         target_id = parent_item.data(Qt.UserRole + 1)
                         target_name = f"{parent_item.text()} (文件: {target_name})"
                     else:
-                        from PySide6.QtWidgets import QMessageBox
-                        QMessageBox.information(self, "调试", f"目标文件没有父项目: {target_name}")
                         return
             
             # 防止循环依赖
             if source_id == target_id:
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.information(self, "调试", "源项目和目标项目相同，取消操作")
                 return
             
             # 调用move_project函数
-            from core.project_tree import move_project
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.information(self, "调试", f"准备移动项目: {source_name} (ID: {source_id}) 到 {target_name} (ID: {target_id})")
             
             success = move_project(source_id, target_id)
             
             if success:
-                QMessageBox.information(self, "调试", "项目移动成功，正在刷新项目树...")
                 # 强制刷新项目树，不依赖哈希检查
                 self.save_tree_state()
                 self.model_projects.removeRows(0, self.model_projects.rowCount())
@@ -5324,9 +5458,8 @@ class DashboardV2(QMainWindow):
                         
                 self.restore_tree_state()
                 self.last_tree_hash = None  # 重置哈希值，确保下次刷新时重新计算
-                QMessageBox.information(self, "调试", "项目树刷新完成")
             else:
-                QMessageBox.information(self, "调试", "项目移动失败")
+                pass  # 移动失败，静默处理
             
             event.acceptProposedAction()
 
