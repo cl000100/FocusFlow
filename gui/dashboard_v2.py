@@ -4543,13 +4543,17 @@ class DashboardV2(QMainWindow):
             if item:
                 process_set_visible(item)
 
-        # 展开所有顶级项目
-        for i in range(root.rowCount()):
-            item = root.child(i)
-            if item:
-                index = model.indexFromItem(item)
-                if index.isValid():
-                    self.tree_projects.expand(index)
+        # 搜索时有匹配则展开，无搜索时折叠
+        if filter_text:
+            for i in range(root.rowCount()):
+                item = root.child(i)
+                if item and not self.tree_projects.isExpanded(model.indexFromItem(item)):
+                    self.tree_projects.expand(model.indexFromItem(item))
+        else:
+            for i in range(root.rowCount()):
+                item = root.child(i)
+                if item:
+                    self.tree_projects.collapse(model.indexFromItem(item))
 
     def on_inbox_search_changed(self, text):
         self._write_debug(f"inbox search changed: '{text}'")

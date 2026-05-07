@@ -51,10 +51,17 @@ def get_db_path():
     # 2. 优先使用用户数据目录
     user_data_dir = get_user_data_dir()
     user_db_path = os.path.join(user_data_dir, "data", "tracker.db")
-    
-    # 如果用户数据目录的数据库存在，直接使用
-    if os.path.exists(user_db_path):
-        return user_db_path
+
+    # 如果用户数据目录的数据库存在且有效（有表），使用它
+    if os.path.exists(user_db_path) and os.path.getsize(user_db_path) > 1024:
+        try:
+            conn = sqlite3.connect(user_db_path)
+            tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            conn.close()
+            if len(tables) > 0:
+                return user_db_path
+        except:
+            pass
     
     # 3. 降级到程序目录（兼容旧版）
     local_db_path = os.path.join(base_dir, "data", "tracker.db")
